@@ -1,0 +1,56 @@
+@page "/login"
+@attribute [AllowAnonymous]
+@layout PzServerManager.Web.Components.Layout.LoginLayout
+@inject PzServerManager.Infrastructure.Authentication.UserFileStore Users
+
+<PageTitle>Entrar — PZ Server Manager</PageTitle>
+
+<main class="login-page">
+    <section class="login-card panel-card">
+        <div class="login-brand"><span class="brand-mark">PZ</span> Server Manager</div>
+        <h1>Entrar</h1>
+        <p class="page-description">Use sua conta administrativa para acessar o servidor.</p>
+
+        @if (!_hasUsers)
+        {
+            <div class="alert alert-warning">
+                Nenhum usuário foi cadastrado. No servidor, execute
+                <code>./PzServerManager.Web --set-password &lt;usuario&gt;</code>.
+            </div>
+        }
+
+        @if (Erro == "1")
+        {
+            <div class="alert alert-danger" role="alert">Usuário ou senha inválidos.</div>
+        }
+
+        <form method="post" action="/auth/login">
+            <AntiforgeryToken />
+            <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+            <div class="form-field">
+                <label for="usuario">Usuário</label>
+                <input id="usuario" class="form-control" name="usuario" autocomplete="username" required autofocus />
+            </div>
+            <div class="form-field">
+                <label for="senha">Senha</label>
+                <input id="senha" class="form-control" name="senha" type="password" autocomplete="current-password" required />
+            </div>
+            <button class="btn btn-primary w-100" type="submit">Entrar</button>
+        </form>
+    </section>
+</main>
+
+@code {
+    private bool _hasUsers = true;
+
+    [SupplyParameterFromQuery(Name = "erro")]
+    public string? Erro { get; set; }
+
+    [SupplyParameterFromQuery(Name = "returnUrl")]
+    public string? ReturnUrl { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _hasUsers = await Users.HasUsersAsync();
+    }
+}

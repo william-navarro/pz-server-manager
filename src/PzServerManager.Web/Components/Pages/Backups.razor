@@ -1,0 +1,213 @@
+@page "/backups"
+@attribute [Authorize]
+@inject IBackupManager BackupManager
+@inject ServerRestartCoordinator RestartCoordinator
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Backups — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">PROTEÇÃO DO MUNDO</p>
+        <h1>Backups</h1>
+        <p class="page-description">Crie cópias, restaure um estado anterior ou comece um mundo novo com segurança.</p>
+    </div>
+    <button class="btn btn-primary" disabled="@ActionsBlocked" @onclick="CreateBackupAsync">Fazer backup agora</button>
+</div>
+
+@if (ActionsBlocked)
+{
+    <div class="alert alert-warning"><strong>Operação em andamento:</strong> @(BackupManager.CurrentOperation ?? "aguarde a conclusão"). As demais ações do servidor estão bloqueadas.</div>
+}
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="alert alert-danger">@_error</div>
+}
+@if (!string.IsNullOrWhiteSpace(_message))
+{
+    <div class="alert @(_lastResult?.Succeeded == false ? "alert-danger" : "alert-success")">@_message</div>
+}
+
+<div class="metric-grid backup-metrics">
+    <div class="metric-card"><span class="metric-label">Backups disponíveis</span><strong>@(_overview?.Files.Count.ToString() ?? "—")</strong><span class="metric-help">14 mais recentes mantidos pelo servidor</span></div>
+    <div class="metric-card"><span class="metric-label">Próximo diário</span><strong class="backup-date">@FormatDate(_overview?.NextDailyBackup)</strong><span class="metric-help">timer diário às 05:00</span></div>
+    <div class="metric-card"><span class="metric-label">Último manual</span><strong>@ResultLabel(FindResult(SystemdBackupManager.ManualUnit))</strong><span class="metric-help">@FormatFinished(FindResult(SystemdBackupManager.ManualUnit))</span></div>
+    <div class="metric-card"><span class="metric-label">Último diário</span><strong>@ResultLabel(FindResult(SystemdBackupManager.DailyUnit))</strong><span class="metric-help">@FormatFinished(FindResult(SystemdBackupManager.DailyUnit))</span></div>
+</div>
+
+<section class="panel-card backups-list">
+    <div class="panel-title"><div><p class="eyebrow">ARQUIVOS</p><h2>Backups disponíveis</h2></div><button class="btn btn-secondary" disabled="@ActionsBlocked" @onclick="LoadAsync">Atualizar</button></div>
+    @if (_loading)
+    {
+        <p class="page-description">Carregando backups...</p>
+    }
+    else if ((_overview?.Files.Count ?? 0) == 0)
+    {
+        <div class="empty-state"><strong>Nenhum backup encontrado</strong><span>Use “Fazer backup agora” para criar o primeiro.</span></div>
+    }
+    else
+    {
+        <div class="table-responsive">
+            <table class="data-table backups-table">
+                <thead><tr><th>Data e hora</th><th>Motivo</th><th>Tamanho</th><th></th></tr></thead>
+                <tbody>
+                @foreach (var backup in _overview!.Files)
+                {
+                    <tr>
+                        <td><strong>@backup.Timestamp.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss")</strong><small>@backup.FileName</small></td>
+                        <td>@backup.ReasonLabel</td>
+                        <td>@FormatBytes(backup.SizeBytes)</td>
+                        <td><button class="btn btn-outline-warning btn-sm" disabled="@ActionsBlocked" @onclick="() => PrepareRestoreAsync(backup)">Restaurar</button></td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@if (_restoreCandidate is not null)
+{
+    <section class="panel-card confirmation-box destructive-confirmation">
+        <p class="eyebrow">CONFIRMAÇÃO DE RESTAURAÇÃO</p>
+        <h2>Restaurar @_restoreCandidate.Timestamp.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss")?</h2>
+        <p>O servidor será parado, o mundo atual será substituído e o servidor será ligado novamente. Um backup <strong>Antes de restaurar</strong> será criado primeiro.</p>
+        <p>@PlayersWarning()</p>
+        <div class="form-field">
+            <label>Digite <strong>@RestoreConfirmationText</strong> para confirmar</label>
+            <input class="form-control" autocomplete="off" @bind="_confirmationText" />
+        </div>
+        <div class="action-buttons">
+            <button class="btn btn-danger" disabled="@(ActionsBlocked || _confirmationText != RestoreConfirmationText)" @onclick="RestoreAsync">Restaurar e reiniciar</button>
+            <button class="btn btn-secondary" disabled="@ActionsBlocked" @onclick="CancelConfirmation">Cancelar</button>
+        </div>
+    </section>
+}
+
+<section class="panel-card reset-world-panel">
+    <div class="panel-title"><div><p class="eyebrow">ZONA DE PERIGO</p><h2>Zerar mundo</h2></div><button class="btn btn-outline-danger" disabled="@ActionsBlocked" @onclick="PrepareResetAsync">Zerar mundo...</button></div>
+    <p class="page-description"><strong>Será mantido:</strong> configurações, mods, senhas e contas. <strong>Será perdido:</strong> personagens, bases e todo o mapa explorado. Um backup completo é feito antes.</p>
+</section>
+
+@if (_confirmReset)
+{
+    <section class="panel-card confirmation-box destructive-confirmation">
+        <p class="eyebrow">CONFIRMAÇÃO DE ZERAGEM</p>
+        <h2>Esta ação apaga o mundo atual</h2>
+        <p>Personagens, bases e mapa serão removidos. Configurações, mods, senhas e contas serão mantidos. O servidor será reiniciado e um backup <strong>Antes de zerar</strong> será criado.</p>
+        <p>@PlayersWarning()</p>
+        <div class="form-field"><label>Digite <strong>ZERAR</strong> para confirmar</label><input class="form-control" autocomplete="off" @bind="_confirmationText" /></div>
+        <div class="action-buttons">
+            <button class="btn btn-danger" disabled="@(ActionsBlocked || _confirmationText != "ZERAR")" @onclick="ResetWorldAsync">Zerar e reiniciar</button>
+            <button class="btn btn-secondary" disabled="@ActionsBlocked" @onclick="CancelConfirmation">Cancelar</button>
+        </div>
+    </section>
+}
+
+@if (_lastResult is not null)
+{
+    <section class="operation-console panel-card backup-journal">
+        <div class="panel-title"><div><p class="eyebrow">RESULTADO</p><h2>Últimas linhas do serviço</h2></div><span class="tag @(_lastResult.Succeeded ? "tag-success" : "tag-danger")">@(_lastResult.Succeeded ? "Concluído" : _lastResult.TimedOut ? "Tempo esgotado" : "Falhou")</span></div>
+        <pre>@(string.IsNullOrWhiteSpace(_lastResult.Journal) ? "O serviço não produziu linhas no journal." : _lastResult.Journal)</pre>
+    </section>
+}
+
+@code {
+    private BackupOverview? _overview;
+    private BackupOperationResult? _lastResult;
+    private BackupFile? _restoreCandidate;
+    private IReadOnlyList<string>? _players;
+    private bool _playersUnavailable;
+    private bool _confirmReset;
+    private bool _operationInProgress;
+    private bool _loading = true;
+    private string _confirmationText = string.Empty;
+    private string? _message;
+    private string? _error;
+
+    private bool ActionsBlocked => _operationInProgress || BackupManager.IsOperationInProgress;
+    private string RestoreConfirmationText => _restoreCandidate?.Timestamp.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss") ?? string.Empty;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _error = null;
+        try { _overview = await BackupManager.GetOverviewAsync(); }
+        catch (Exception exception) { _error = $"Não foi possível carregar os backups: {exception.Message}"; }
+        finally { _loading = false; }
+    }
+
+    private Task CreateBackupAsync() => RunOperationAsync(actor => BackupManager.CreateBackupAsync(actor));
+
+    private async Task PrepareRestoreAsync(BackupFile backup)
+    {
+        if (ActionsBlocked) return;
+        _restoreCandidate = backup; _confirmReset = false; _confirmationText = string.Empty; _message = null; _error = null;
+        await LoadPlayersAsync();
+    }
+
+    private async Task PrepareResetAsync()
+    {
+        if (ActionsBlocked) return;
+        _confirmReset = true; _restoreCandidate = null; _confirmationText = string.Empty; _message = null; _error = null;
+        await LoadPlayersAsync();
+    }
+
+    private Task RestoreAsync()
+    {
+        var backup = _restoreCandidate ?? throw new InvalidOperationException("Nenhum backup foi selecionado.");
+        if (_confirmationText != RestoreConfirmationText) return Task.CompletedTask;
+        return RunOperationAsync(actor => BackupManager.RestoreAsync(actor, backup.FileName));
+    }
+
+    private Task ResetWorldAsync()
+    {
+        if (_confirmationText != "ZERAR") return Task.CompletedTask;
+        return RunOperationAsync(actor => BackupManager.ResetWorldAsync(actor));
+    }
+
+    private async Task RunOperationAsync(Func<string, Task<BackupOperationResult>> operation)
+    {
+        if (ActionsBlocked) return;
+        _operationInProgress = true; _error = null; _message = null; _lastResult = null;
+        CancelConfirmation();
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var authentication = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            _lastResult = await operation(authentication.User.Identity?.Name ?? "desconhecido");
+            _message = _lastResult.Message;
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally
+        {
+            _operationInProgress = false;
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadPlayersAsync()
+    {
+        _players = null; _playersUnavailable = false;
+        try { _players = await RestartCoordinator.GetPlayersAsync(); }
+        catch { _playersUnavailable = true; }
+    }
+
+    private string PlayersWarning() => _playersUnavailable
+        ? "Não foi possível consultar quantos jogadores estão online. Confirme com todos antes de continuar."
+        : (_players?.Count ?? 0) == 0
+            ? "Não há jogadores online neste momento."
+            : $"Há {_players!.Count} jogador(es) online: {string.Join(", ", _players)}. Avise a todos antes de continuar.";
+
+    private void CancelConfirmation()
+    {
+        _restoreCandidate = null; _confirmReset = false; _confirmationText = string.Empty; _players = null; _playersUnavailable = false;
+    }
+
+    private BackupServiceResult? FindResult(string unit) => _overview?.LastResults.FirstOrDefault(item => item.UnitName == unit);
+    private static string ResultLabel(BackupServiceResult? result) => result is null || string.IsNullOrWhiteSpace(result.Result) ? "—" : result.Result.Equals("success", StringComparison.OrdinalIgnoreCase) ? "Sucesso" : "Falhou";
+    private static string FormatFinished(BackupServiceResult? result) => result?.FinishedAt is null ? "sem execução registrada" : result.FinishedAt.Value.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss");
+    private static string FormatDate(DateTimeOffset? value) => value?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "Indisponível";
+    private static string FormatBytes(long bytes) => bytes >= 1024L * 1024 * 1024 ? $"{bytes / (1024d * 1024 * 1024):0.00} GiB" : bytes >= 1024L * 1024 ? $"{bytes / (1024d * 1024):0.0} MiB" : $"{bytes / 1024d:0.0} KiB";
+}

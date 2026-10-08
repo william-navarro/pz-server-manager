@@ -1,0 +1,46 @@
+@page "/historico-configuracoes"
+@attribute [Authorize]
+@inject IConfigurationHistoryService History
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject Microsoft.Extensions.Options.IOptions<ManagerOptions> Options
+
+<PageTitle>Histórico de configurações — PZ Server Manager</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">SEGURANÇA</p><h1>Histórico de configurações</h1><p class="page-description">Compare e restaure cópias do INI e do SandboxVars armazenadas junto aos arquivos atuais.</p></div><button class="btn btn-secondary" @onclick="LoadAsync">Atualizar</button></div>
+@if (!string.IsNullOrWhiteSpace(_error)) { <div class="alert alert-danger">@_error</div> }
+@if (!string.IsNullOrWhiteSpace(_message)) { <div class="alert alert-success">@_message</div> }
+
+<section class="panel-card">
+    <div class="table-responsive"><table class="data-table"><thead><tr><th>Arquivo</th><th>Tipo</th><th>Alterado</th><th>Tamanho</th><th></th></tr></thead><tbody>
+    @foreach (var file in _files) { <tr><td><code>@file.FileName</code></td><td>@Kind(file.Kind)</td><td>@file.LastModified.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss")</td><td>@(file.SizeBytes / 1024d).ToString("0.0") KiB</td><td><button class="btn btn-outline-success btn-sm" @onclick="() => CompareAsync(file.FileName)">Ver diferença</button></td></tr> }
+    </tbody></table></div>
+</section>
+
+@if (_comparison is not null)
+{
+    <section class="panel-card history-diff">
+        <div class="panel-title"><div><p class="eyebrow">DIFERENÇA</p><h2>@_comparison.Backup.FileName → @_comparison.CurrentFileName</h2></div><button class="btn btn-outline-warning" @onclick="() => _restoreCandidate = _comparison.Backup.FileName">Restaurar esta cópia</button></div>
+        <div class="diff-view">@foreach (var line in _comparison.Lines) { <div class="diff-@line.Kind.ToString().ToLowerInvariant()"><span>@(line.OldLineNumber?.ToString() ?? "")</span><span>@(line.NewLineNumber?.ToString() ?? "")</span><code>@Prefix(line.Kind)@line.Text</code></div> }</div>
+    </section>
+}
+@if (_restoreCandidate is not null)
+{
+    <section class="panel-card confirmation-box"><h2>Restaurar @_restoreCandidate?</h2><p>O atual será salvo antes. O servidor precisa ser reiniciado para a configuração restaurada valer.</p><div class="action-buttons"><button class="btn btn-danger" @onclick="RestoreAsync">Restaurar</button><button class="btn btn-secondary" @onclick="() => _restoreCandidate = null">Cancelar</button></div></section>
+}
+
+@code {
+    private IReadOnlyList<ConfigurationBackup> _files = [];
+    private ConfigurationComparison? _comparison;
+    private string? _restoreCandidate; private string? _error; private string? _message;
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private async Task LoadAsync() { try { _files = await History.ListAsync(); _error = null; } catch (Exception e) { _error = e.Message; } }
+    private async Task CompareAsync(string name) { try { _comparison = await History.CompareAsync(name); _error = null; } catch (Exception e) { _error = e.Message; } }
+    private async Task RestoreAsync()
+    {
+        try { var auth = await AuthenticationStateProvider.GetAuthenticationStateAsync(); await History.RestoreAsync(auth.User.Identity?.Name ?? "desconhecido", _restoreCandidate!); _restoreCandidate = null; _message = "Configuração restaurada. Reinicie o servidor para aplicar."; await LoadAsync(); }
+        catch (Exception e) { _error = e.Message; }
+    }
+    private string Kind(ConfigurationFileKind kind) => kind == ConfigurationFileKind.ServerIni
+        ? $"{Options.Value.ManagedServer!.ServerName}.ini"
+        : "SandboxVars.lua";
+    private static string Prefix(DiffLineKind kind) => kind == DiffLineKind.Added ? "+ " : kind == DiffLineKind.Removed ? "− " : "  ";
+}

@@ -1,0 +1,9 @@
+[Unit]
+Description=Atualizar servidor dedicado do Project Zomboid
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pz-atualizar
+TimeoutStartSec=30min

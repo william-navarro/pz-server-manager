@@ -1,0 +1,20 @@
+[Unit]
+Description=PZ Server Manager
+After=network.target pzserver.service
+
+[Service]
+Type=simple
+User=pzmanager
+WorkingDirectory=/opt/pzmanager
+ExecStart=/opt/pzmanager/PzServerManager.Web
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pzmanager __PZ_ROOT__/Zomboid
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

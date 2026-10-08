@@ -1,0 +1,149 @@
+@page "/configuracoes"
+@attribute [Authorize]
+@implements IAsyncDisposable
+@inject ServerSettingsService SettingsService
+@inject ServerRestartCoordinator RestartCoordinator
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject Microsoft.Extensions.Options.IOptions<ManagerOptions> Options
+
+<PageTitle>Configurações — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div><p class="eyebrow">SERVER INI</p><h1>Configurações</h1><p class="page-description">Edite as opções do servidor com validação e backup automático.</p></div>
+    <button class="btn btn-outline-success" @onclick="LoadAsync">Recarregar arquivo</button>
+</div>
+@if (_error is not null) { <div class="alert alert-danger">@_error</div> }
+@if (_message is not null) { <div class="alert alert-success">@_message</div> }
+
+<section class="panel-card console-toolbar">
+    <div class="form-field filter-field"><label for="settings-search">Buscar por nome ou descrição</label><input id="settings-search" class="form-control" @bind="_search" @bind:event="oninput" /></div>
+    <span class="tag tag-neutral">@FilteredSettings.Count() opções</span>
+</section>
+
+@foreach (var group in GroupOrder)
+{
+    var groupSettings = FilteredSettings.Where(item => item.Group == group).ToArray();
+    if (groupSettings.Length == 0) continue;
+    <section class="panel-card settings-group">
+        <div class="panel-title"><div><p class="eyebrow">SEÇÃO</p><h2>@group</h2></div><span class="tag tag-neutral">@groupSettings.Length</span></div>
+        <div class="settings-list">
+        @foreach (var setting in groupSettings)
+        {
+            <div class="setting-row">
+                <div class="setting-info"><label for="setting-@setting.Key">@setting.Key</label><p>@(setting.Description ?? "Sem descrição no arquivo.")</p>
+                    @if (setting.Constraints.Minimum is not null || setting.Constraints.Maximum is not null || setting.Constraints.DefaultValue is not null)
+                    { <small>Min: @(setting.Constraints.Minimum?.ToString() ?? "—") · Max: @(setting.Constraints.Maximum?.ToString() ?? "—") · Padrão: @(setting.Constraints.DefaultValue ?? "—")</small> }
+                    @if (setting.IsReadOnly) { <small class="readonly-reason">@setting.ReadOnlyReason</small> }
+                </div>
+                <div class="setting-control">
+                @if (setting.ValueType == ServerSettingValueType.Boolean)
+                {
+                    <select id="setting-@setting.Key" class="form-select" disabled="@setting.IsReadOnly" value="@_values[setting.Key]" @onchange="e => SetValue(setting.Key, e.Value)"><option value="true">Ligado</option><option value="false">Desligado</option></select>
+                }
+                else
+                {
+                    <input id="setting-@setting.Key" class="form-control" type="@(setting.IsSensitive && !_revealed.Contains(setting.Key) ? "password" : setting.ValueType is ServerSettingValueType.Integer or ServerSettingValueType.Decimal ? "number" : "text")" step="@(setting.ValueType == ServerSettingValueType.Decimal ? "any" : null)" readonly="@setting.IsReadOnly" value="@_values[setting.Key]" @oninput="e => SetValue(setting.Key, e.Value)" />
+                }
+                @if (setting.IsSensitive)
+                { <button class="btn btn-sm btn-outline-warning" @onclick="() => ToggleRevealAsync(setting.Key)">@(_revealed.Contains(setting.Key) ? "Ocultar" : "Mostrar")</button> }
+                </div>
+            </div>
+        }
+        </div>
+    </section>
+}
+
+<div class="sticky-actions"><button class="btn btn-primary" disabled="@(_loading || _preview.Count > 0)" @onclick="ReviewAsync">Revisar mudanças</button></div>
+
+@if (_preview.Count > 0)
+{
+    <section class="panel-card confirmation-box">
+        <strong>Confira antes de gravar</strong>
+        <ul class="change-list">@foreach (var change in _preview) { <li><code>@change.Key</code>: <span>@DisplayChange(change.Before, change.IsSensitive)</span> → <span>@DisplayChange(change.After, change.IsSensitive)</span></li> }</ul>
+        <button class="btn btn-danger" @onclick="SaveAsync">Gravar alterações</button><button class="btn btn-secondary" @onclick="() => _preview.Clear()">Voltar</button>
+    </section>
+}
+
+@if (_saved)
+{
+    <div class="alert alert-warning restart-notice"><span>As mudanças valem no próximo reinício.</span><button class="btn btn-outline-warning" @onclick="RestartAsync">Reiniciar agora</button></div>
+}
+@if (_restartPlayers is not null)
+{
+    <section class="panel-card confirmation-box"><strong>Há @_restartPlayers.Count jogador(es) online.</strong><p>@string.Join(", ", _restartPlayers). Avise a todos e reinicie em 5 minutos, ou cancele.</p><button class="btn btn-outline-warning" @onclick="StartWarnedRestart">Avisar e reiniciar em 5 min</button><button class="btn btn-secondary" @onclick="() => _restartPlayers = null">Cancelar</button></section>
+}
+@if (_restartTask is not null)
+{
+    <div class="alert alert-warning restart-notice"><span>Reinício avisado em andamento.</span><button class="btn btn-outline-warning" @onclick="CancelRestart">Cancelar reinício</button></div>
+}
+
+@code {
+    private static readonly string[] GroupOrder = ["Geral", "Acesso e segurança", "Jogadores", "PvP", "Mundo e loot", "Rede", "Backups", "Discord", "Outros"];
+    private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _revealed = new(StringComparer.Ordinal);
+    private readonly List<ServerSettingChange> _preview = [];
+    private ServerSettingsSnapshot? _snapshot;
+    private string _search = string.Empty;
+    private string? _error, _message;
+    private bool _loading, _saved;
+    private IReadOnlyList<string>? _restartPlayers;
+    private Task? _restartTask;
+    private readonly CancellationTokenSource _disposeSource = new();
+    private string IniPath => Options.Value.ManagedServer!.ServerIniPath;
+    private IEnumerable<ServerSetting> FilteredSettings => _snapshot?.Settings.Where(item => string.IsNullOrWhiteSpace(_search) || item.Key.Contains(_search, StringComparison.OrdinalIgnoreCase) || (item.Description?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false)) ?? [];
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private async Task<string> ActorAsync() => (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "desconhecido";
+    private async Task LoadAsync()
+    {
+        _loading = true; _error = _message = null; _saved = false; _preview.Clear(); _revealed.Clear();
+        try { _snapshot = await SettingsService.LoadAsync(IniPath); _values.Clear(); foreach (var setting in _snapshot.Settings) _values[setting.Key] = setting.Value; }
+        catch (Exception e) { _error = $"Não foi possível ler o arquivo: {e.Message}"; }
+        finally { _loading = false; }
+    }
+    private void SetValue(string key, object? value) { _values[key] = value?.ToString() ?? string.Empty; _preview.Clear(); _saved = false; }
+    private async Task ToggleRevealAsync(string key)
+    {
+        if (_revealed.Remove(key)) return;
+        await SettingsService.AuditSensitiveRevealAsync(key, await ActorAsync()); _revealed.Add(key);
+    }
+    private Task ReviewAsync()
+    {
+        _error = null; _preview.Clear();
+        try
+        {
+            foreach (var setting in _snapshot!.Settings.Where(item => !item.IsReadOnly && !string.Equals(item.Value, _values[item.Key], StringComparison.Ordinal)))
+            { ServerSettingsCatalog.ValidateValue(setting, _values[setting.Key]); _preview.Add(new(setting.Key, setting.Value, _values[setting.Key], setting.IsSensitive)); }
+            if (_preview.Count == 0) _message = "Nenhuma configuração foi alterada.";
+        }
+        catch (Exception e) { _error = e.Message; }
+        return Task.CompletedTask;
+    }
+    private async Task SaveAsync()
+    {
+        try { await SettingsService.SaveAsync(IniPath, _snapshot!.OriginalText, _values, await ActorAsync()); _message = "Configurações gravadas com backup automático."; _saved = true; await RefreshSnapshotAfterSaveAsync(); }
+        catch (ServerSettingsConflictException e) { _error = e.Message; _preview.Clear(); }
+        catch (Exception e) { _error = e.Message; }
+    }
+    private async Task RefreshSnapshotAfterSaveAsync() { _snapshot = await SettingsService.LoadAsync(IniPath); _preview.Clear(); }
+    private async Task RestartAsync()
+    {
+        try
+        {
+            var actor = await ActorAsync(); var players = await RestartCoordinator.GetPlayersAsync();
+            if (players.Count > 0) { _restartPlayers = players; return; }
+            await RestartCoordinator.RestartNowAsync(actor); _message = "Reinício solicitado.";
+        }
+        catch (Exception e) { _error = e.Message; }
+    }
+    private void StartWarnedRestart() { _restartPlayers = null; _message = "Reinício programado e primeiro aviso enviado."; _restartTask = RunWarnedRestartAsync(); }
+    private async Task RunWarnedRestartAsync()
+    {
+        try { await RestartCoordinator.WarnAndRestartAsync(await ActorAsync(), _disposeSource.Token); _message = "Reinício solicitado."; }
+        catch (OperationCanceledException) { _message = "Reinício programado cancelado."; }
+        catch (Exception e) { _error = e.Message; }
+        finally { _restartTask = null; await InvokeAsync(StateHasChanged); }
+    }
+    private void CancelRestart() => RestartCoordinator.Cancel();
+    private static string DisplayChange(string value, bool sensitive) => sensitive ? "••••••••" : value;
+    public async ValueTask DisposeAsync() { _disposeSource.Cancel(); RestartCoordinator.Cancel(); if (_restartTask is not null) await _restartTask; _disposeSource.Dispose(); }
+}

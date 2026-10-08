@@ -1,0 +1,5 @@
+Sandbox_EN = {
+    Sandbox_ExampleTraits_Page = "EXAMPLE TRAITS",
+    Sandbox_ExampleTraits_BandageAmount = "Bandage count",
+    Sandbox_ExampleTraits_Distance = "Effect distance",
+}

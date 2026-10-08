@@ -1,0 +1,193 @@
+@page "/cardinal"
+@attribute [Authorize]
+@inject ICardinalManager CardinalManager
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Cardinal — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div><p class="eyebrow">IA DIRETORA</p><h1>Cardinal</h1><p class="page-description">Desafia com moderação, respeita as proteções e sempre deixa uma chance de fuga.</p></div>
+    <div class="action-buttons"><button class="btn btn-outline-success" disabled="@_busy" @onclick="LoadAsync">Atualizar</button><button class="btn btn-primary" disabled="@_busy" @onclick="SaveAsync">Salvar</button></div>
+</div>
+
+@if (_error is not null) { <div class="alert alert-danger">@_error</div> }
+@if (_message is not null) { <div class="alert alert-success">@_message</div> }
+
+<div class="metric-grid">
+    <div class="metric-card"><span class="metric-label">Modo</span><strong>@ModeLabel(_settings.Mode)</strong><span class="metric-help">instalação segura: desligado</span></div>
+    <div class="metric-card"><span class="metric-label">Jogadores no snapshot</span><strong>@(_dashboard?.LatestSnapshot?.Players.Count ?? 0)</strong><span class="metric-help">ponte Lua a cada minuto</span></div>
+    <div class="metric-card"><span class="metric-label">LLM hoje</span><strong>@(_dashboard?.Usage.CallsToday ?? 0) / @_settings.LlmDailyCallBudget</strong><span class="metric-help">@(_dashboard?.Usage.InputTokensToday ?? 0) entrada · @(_dashboard?.Usage.OutputTokensToday ?? 0) saída</span></div>
+</div>
+
+<div class="content-grid">
+    <section class="panel-card">
+        <div class="panel-title"><div><p class="eyebrow">CONTROLE</p><h2>Modo e limites</h2></div></div>
+        <div class="form-field"><label>Modo de operação</label><select class="form-select" @bind="_settings.Mode"><option value="@CardinalMode.Desligado">Desligado</option><option value="@CardinalMode.Observar">Observar — decide e registra</option><option value="@CardinalMode.Ativo">Ativo — executa eventos</option></select></div>
+        <div class="cardinal-slider"><label>Intervalo por jogador <strong>@_settings.PlayerCooldownMinutes min</strong></label><input type="range" min="5" max="180" step="5" @bind="_settings.PlayerCooldownMinutes" /></div>
+        <div class="cardinal-slider"><label>Eventos por hora <strong>@_settings.MaximumEventsPerHour</strong></label><input type="range" min="1" max="10" @bind="_settings.MaximumEventsPerHour" /></div>
+        <div class="cardinal-slider"><label>Horda por jogador <strong>@_settings.MaximumHordePerPlayer</strong></label><input type="range" min="1" max="30" @bind="_settings.MaximumHordePerPlayer" /></div>
+        <div class="cardinal-slider"><label>Teto total da horda <strong>@_settings.MaximumHordeTotal</strong></label><input type="range" min="1" max="60" @bind="_settings.MaximumHordeTotal" /></div>
+        <div class="cardinal-slider"><label>Bloqueio com zumbis próximos <strong>@_settings.NearbyZombieLimit</strong></label><input type="range" min="1" max="40" @bind="_settings.NearbyZombieLimit" /></div>
+        <div class="cardinal-slider"><label>Alívio após pico <strong>@_settings.ReliefMinutes min</strong></label><input type="range" min="5" max="120" step="5" @bind="_settings.ReliefMinutes" /></div>
+        <div class="cardinal-slider"><label>Teto hostil global <strong>1 a cada @_settings.GlobalHostileCooldownMinutes min</strong></label><input type="range" min="5" max="120" step="5" @bind="_settings.GlobalHostileCooldownMinutes" /></div>
+        <label class="check-label"><input type="checkbox" @bind="_settings.QuietHoursEnabled" /> Modo calmo agendado</label>
+        <div class="form-row"><div class="form-field"><label>Início (HH:mm)</label><input class="form-control" type="text" pattern="[0-2][0-9]:[0-5][0-9]" @bind="_settings.QuietHoursStart" /></div><div class="form-field"><label>Fim (HH:mm)</label><input class="form-control" type="text" pattern="[0-2][0-9]:[0-5][0-9]" @bind="_settings.QuietHoursEnd" /></div></div>
+        <h3 class="cardinal-subtitle">Proteções</h3>
+        <div class="cardinal-checks">
+            <label class="check-label"><input type="checkbox" @bind="_settings.ProtectSleeping" /> Sono e pós-sono</label>
+            <label class="check-label"><input type="checkbox" @bind="_settings.ProtectResting" /> Sentado, lendo ou descansando</label>
+            <label class="check-label"><input type="checkbox" @bind="_settings.ProtectWeakPlayers" /> Ferido, fraco, doente ou bêbado</label>
+            <label class="check-label"><input type="checkbox" @bind="_settings.ProtectUnarmedPlayers" /> Sem munição e sem arma corpo a corpo</label>
+            <label class="check-label"><input type="checkbox" @bind="_settings.ProtectMovingVehicles" /> Veículo em movimento</label>
+        </div>
+        <div class="form-row"><div class="form-field"><label>Personagem novo (min)</label><input class="form-control" type="number" min="0" max="1440" @bind="_settings.NewCharacterProtectionMinutes" /></div><div class="form-field"><label>Após entrar (min)</label><input class="form-control" type="number" min="0" max="120" @bind="_settings.NewConnectionProtectionMinutes" /></div></div>
+        <div class="form-row"><div class="form-field"><label>Após morte no grupo (min)</label><input class="form-control" type="number" min="0" max="120" @bind="_settings.GroupDeathProtectionMinutes" /></div><div class="form-field"><label>Após acordar (min)</label><input class="form-control" type="number" min="0" max="60" @bind="_settings.WakeProtectionMinutes" /></div></div>
+        <hr />
+        <label class="check-label"><input type="checkbox" @bind="_settings.LlmEnabled" /> Usar Claude Haiku quando houver chave</label>
+        <div class="form-row"><div class="form-field"><label>Chamadas por dia</label><input class="form-control" type="number" min="1" max="1000" @bind="_settings.LlmDailyCallBudget" /></div><div class="form-field"><label>Intervalo (min)</label><input class="form-control" type="number" min="10" max="1440" @bind="_settings.LlmIntervalMinutes" /></div></div>
+        <p class="page-description">A chave fica fora do painel em <code>/etc/pzmanager/cardinal.key</code> com modo 0600. Sem arquivo, nenhuma chamada é feita.</p>
+    </section>
+
+    <section class="panel-card">
+        <div class="panel-title"><div><p class="eyebrow">TESTE SEGURO</p><h2>Disparar agora</h2></div></div>
+        <div class="form-field"><label>Ação da lista branca</label><select class="form-select" @bind="_manual.Kind">@foreach (var kind in Enum.GetValues<CardinalActionKind>()) { <option value="@kind">@CardinalActionCatalog.Label(kind)</option> }</select></div>
+        <div class="form-field"><label>Jogador</label><select class="form-select" @bind="_manual.Player"><option value="">Selecione</option>@foreach (var player in _dashboard?.LatestSnapshot?.Players ?? []) { <option value="@player.Username">@player.Username</option> }</select></div>
+        <div class="form-row"><div class="form-field"><label>Quantidade</label><input class="form-control" type="number" min="0" max="100" @bind="_manual.Amount" /></div><div class="form-field"><label>Distância</label><input class="form-control" type="number" min="25" max="500" @bind="_manual.Distance" /></div></div>
+        @if (_manual.Kind == CardinalActionKind.ItemRaro)
+        {
+            <div class="form-field"><label>Item permitido</label><select class="form-select" @bind="_manual.ItemType">@foreach (var item in _settings.RareItemAllowList) { <option value="@item">@item</option> }</select></div>
+        }
+        @if (_manual.Kind == CardinalActionKind.Mensagem)
+        {
+            <div class="form-field"><label>Mensagem curta</label><input class="form-control" maxlength="160" @bind="_manual.Message" /></div>
+        }
+        <label class="check-label"><input type="checkbox" @bind="_manual.OverrideProtections" /> Ignorar proteções (fica registrado)</label>
+        <button class="btn btn-outline-warning" disabled="@_busy" @onclick="BeginManual">Revisar disparo</button>
+        @if (_confirmManual)
+        {
+            <div class="confirmation-box cardinal-confirm">
+                <strong>Confirmar @CardinalActionCatalog.Label(_manual.Kind)?</strong>
+                <p>Modo atual: @ModeLabel(_settings.Mode). @(_settings.Mode == CardinalMode.Observar ? "A ação será apenas registrada." : "A ação será enviada ao servidor.")</p>
+                @if (_manual.OverrideProtections) { <div class="alert alert-danger">As proteções serão ignoradas explicitamente.</div> }
+                <div class="action-buttons"><button class="btn btn-danger" @onclick="ConfirmManualAsync">Confirmar</button><button class="btn btn-secondary" @onclick="() => _confirmManual = false">Cancelar</button></div>
+            </div>
+        }
+    </section>
+</div>
+
+<section class="panel-card">
+    <div class="panel-title"><div><p class="eyebrow">OLHOS</p><h2>Estado atual</h2></div><span class="tag tag-neutral">@FormatTimestamp(_dashboard?.LatestSnapshot?.Timestamp)</span></div>
+    @if (_dashboard?.LatestSnapshot is not { Players.Count: > 0 } snapshot)
+    {
+        <div class="empty-state small-empty"><strong>Sem snapshot da ponte</strong><span>A atividade pelos logs continua disponível na página Jogadores.</span></div>
+    }
+    else
+    {
+        <div class="table-responsive"><table class="data-table"><thead><tr><th>Jogador</th><th>Posição</th><th>Tensão</th><th>Vida</th><th>Zumbis 20 / 30 / 50</th><th>Estado</th><th>Arma / munição</th><th>Grupo</th></tr></thead><tbody>
+        @foreach (var player in snapshot.Players)
+        {
+            <tr><td><strong>@player.Username</strong><br /><small>@player.HoursSurvived.ToString("0.#") h vivo @NoiseLabel(player.Username)</small></td><td>@player.X.ToString("0"), @player.Y.ToString("0"), @player.Z.ToString("0")</td><td><span class="tag @TensionClass(Tension(player))">@Tension(player)%</span></td><td>@player.HealthPercent.ToString("0")%</td><td>@player.Zombies20 / @player.Zombies30 / @player.Zombies50</td><td>@PlayerState(player)</td><td>@(player.HandWeapon ?? "desarmado") · @player.WeaponAmmo+@player.InventoryAmmo</td><td>@player.GroupSize</td></tr>
+        }
+        </tbody></table></div>
+    }
+</section>
+
+<section class="panel-card">
+    <div class="panel-title"><div><p class="eyebrow">EVENTOS</p><h2>Pesos e intervalos</h2></div></div>
+    <div class="table-responsive"><table class="data-table"><thead><tr><th>Evento</th><th>Ligado</th><th>Peso</th><th>Intervalo</th></tr></thead><tbody>
+    @foreach (var pair in _settings.Events.OrderBy(pair => CardinalActionCatalog.Label(pair.Key)))
+    {
+        <tr><td>@CardinalActionCatalog.Label(pair.Key)</td><td><input type="checkbox" @bind="pair.Value.Enabled" /></td><td><input class="form-control cardinal-number" type="number" min="0" max="100" @bind="pair.Value.Weight" /></td><td><input class="form-control cardinal-number" type="number" min="1" max="10080" @bind="pair.Value.CooldownMinutes" /> min</td></tr>
+    }
+    </tbody></table></div>
+</section>
+
+<section class="panel-card">
+    <div class="panel-title"><div><p class="eyebrow">SUPRIMENTOS</p><h2>Pontos fixos</h2></div></div>
+    <div class="form-row cardinal-point-row"><div class="form-field"><label>Nome</label><input class="form-control" maxlength="80" @bind="_newPoint.Name" /></div><div class="form-field"><label>X</label><input class="form-control" type="number" @bind="_newPoint.X" /></div><div class="form-field"><label>Y</label><input class="form-control" type="number" @bind="_newPoint.Y" /></div><div class="form-field"><label>Z</label><input class="form-control" type="number" @bind="_newPoint.Z" /></div><div class="form-field"><label>Raio</label><input class="form-control" type="number" min="1" max="500" @bind="_newPoint.Radius" /></div></div>
+    <div class="form-field"><label>Kits permitidos (separados por vírgula)</label><input class="form-control" maxlength="300" placeholder="munição, comida, curativos" @bind="_newPointKits" /></div>
+    <button class="btn btn-outline-success" @onclick="AddPoint">Adicionar ponto</button>
+    @if (_settings.SpawnPoints.Count > 0)
+    {
+        <div class="player-list cardinal-points">@foreach (var point in _settings.SpawnPoints) { <div class="player-card"><span><strong>@point.Name</strong> · @point.X, @point.Y, @point.Z · raio @point.Radius</span><button class="btn btn-sm btn-outline-danger" @onclick="() => RemovePoint(point)">Remover</button></div> }</div>
+    }
+</section>
+
+<section class="panel-card">
+    <div class="panel-title"><div><p class="eyebrow">LINHA DO TEMPO</p><h2>Decisões e resultados</h2></div></div>
+    @if ((_dashboard?.Timeline.Count ?? 0) == 0) { <div class="empty-state small-empty"><strong>Nenhuma decisão ainda</strong><span>Em Observar, a Cardinal registra o que faria sem executar.</span></div> }
+    else
+    {
+        <div class="table-responsive"><table class="data-table"><thead><tr><th>Quando</th><th>Evento</th><th>Jogador</th><th>Decidiu</th><th>Por quê</th><th>Resultado</th></tr></thead><tbody>
+        @foreach (var item in _dashboard!.Timeline.Take(100))
+        {
+            <tr><td>@item.Timestamp.ToLocalTime().ToString("dd/MM HH:mm:ss")</td><td>@CardinalActionCatalog.Label(item.Action) @if (item.ProtectionsOverridden) { <span class="tag tag-danger">sem proteções</span> }</td><td>@(item.Player ?? "—")</td><td>@SourceLabel(item.Source)</td><td>@item.Reason</td><td><span class="tag @StatusClass(item.Status)">@StatusLabel(item.Status)</span><br /><small>@item.Result</small></td></tr>
+        }
+        </tbody></table></div>
+    }
+</section>
+
+@code {
+    private CardinalDashboard? _dashboard;
+    private CardinalSettings _settings = new();
+    private CardinalActionRequest _manual = new() { Kind = CardinalActionKind.HordaDirecionada, Amount = 10, Distance = 30 };
+    private CardinalSpawnPoint _newPoint = new();
+    private string _newPointKits = string.Empty;
+    private bool _busy;
+    private bool _confirmManual;
+    private string? _error;
+    private string? _message;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        _busy = true; _error = null;
+        try
+        {
+            _dashboard = await CardinalManager.GetDashboardAsync(); _settings = _dashboard.Settings;
+            if (string.IsNullOrWhiteSpace(_manual.Player)) _manual = _manual with { Player = _dashboard.LatestSnapshot?.Players.FirstOrDefault()?.Username, ItemType = _settings.RareItemAllowList.FirstOrDefault() };
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+    private async Task SaveAsync()
+    {
+        _busy = true; _error = _message = null;
+        try { await CardinalManager.SaveSettingsAsync(_settings); _message = "Configuração da Cardinal salva."; await LoadAsync(); }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+    private void BeginManual() { _confirmManual = true; _error = _message = null; }
+    private async Task ConfirmManualAsync()
+    {
+        _busy = true; _confirmManual = false; _error = _message = null;
+        try
+        {
+            var actor = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "desconhecido";
+            var result = await CardinalManager.ExecuteManualAsync(_manual with { RequestedBy = actor });
+            _message = result.Message; await LoadAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+    private void AddPoint()
+    {
+        if (string.IsNullOrWhiteSpace(_newPoint.Name)) { _error = "Informe o nome do ponto."; return; }
+        _newPoint.AllowedKits = _newPointKits.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        _settings.SpawnPoints.Add(_newPoint); _newPoint = new(); _newPointKits = string.Empty; _error = null;
+    }
+    private void RemovePoint(CardinalSpawnPoint point) => _settings.SpawnPoints.Remove(point);
+    private int Tension(CardinalPlayerSnapshot player) => CardinalPolicy.CalculateTension(player, _dashboard?.Timeline.FirstOrDefault(item => item.Player == player.Username), DateTimeOffset.UtcNow);
+    private static string TensionClass(int value) => value >= 70 ? "tag-danger" : value >= 35 ? "tag-warning" : "tag-success";
+    private static string PlayerState(CardinalPlayerSnapshot player) => player.Asleep ? "dormindo" : player.Reading ? "lendo" : player.Sitting ? "sentado" : player.InVehicle ? "em veículo" : player.InsideBuilding ? "dentro" : "ao ar livre";
+    private string NoiseLabel(string userName)
+    {
+        var noise = _dashboard?.Players.FirstOrDefault(item => item.Username.Equals(userName, StringComparison.OrdinalIgnoreCase))?.LastNoiseAt;
+        return noise is not null && DateTimeOffset.UtcNow - noise < TimeSpan.FromMinutes(10) ? "· tiros recentes" : string.Empty;
+    }
+    private static string FormatTimestamp(DateTimeOffset? value) => value?.ToLocalTime().ToString("dd/MM HH:mm:ss") ?? "sem ponte";
+    private static string ModeLabel(CardinalMode mode) => mode switch { CardinalMode.Desligado => "Desligado", CardinalMode.Observar => "Observar", _ => "Ativo" };
+    private static string SourceLabel(CardinalDecisionSource source) => source switch { CardinalDecisionSource.Regra => "Regra", CardinalDecisionSource.Llm => "LLM", CardinalDecisionSource.Manual => "Manual", _ => "Ponte" };
+    private static string StatusLabel(CardinalEventStatus status) => status switch { CardinalEventStatus.Observado => "faria", CardinalEventStatus.Enfileirado => "enfileirado", CardinalEventStatus.Executado => "executado", CardinalEventStatus.Bloqueado => "bloqueado", _ => "falhou" };
+    private static string StatusClass(CardinalEventStatus status) => status switch { CardinalEventStatus.Executado => "tag-success", CardinalEventStatus.Observado or CardinalEventStatus.Enfileirado => "tag-warning", CardinalEventStatus.Bloqueado => "tag-neutral", _ => "tag-danger" };
+}

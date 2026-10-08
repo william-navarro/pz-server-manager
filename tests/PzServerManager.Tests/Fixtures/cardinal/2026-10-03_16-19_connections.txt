@@ -1,0 +1,2 @@
+[03-10-26 19:11:48.188] event="fully-connected" message="" guid="100000000000000001" ip="203.0.113.10" steam-id="76561190000000001" role="user" username="ana" connection-type="UDPRakNet".
+[03-10-26 20:09:20.447] event="disconnect" message="receive-disconnect" guid="100000000000000001" ip="203.0.113.10" steam-id="76561190000000001" role="user" username="ana" connection-type="Disconnected".

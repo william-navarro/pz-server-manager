@@ -1,0 +1,32 @@
+@inherits LayoutComponentBase
+
+<div class="page">
+    <div class="sidebar">
+        <NavMenu />
+    </div>
+
+    <main>
+        <div class="top-row px-4">
+            <span class="environment-badge"><span class="status-dot"></span> Gerenciador local</span>
+            <AuthorizeView>
+                <Authorized Context="authentication">
+                    <span class="signed-user">@authentication.User.Identity?.Name</span>
+                    <form method="post" action="/logout" class="logout-form">
+                        <AntiforgeryToken />
+                        <button type="submit">Sair</button>
+                    </form>
+                </Authorized>
+            </AuthorizeView>
+        </div>
+
+        <article class="content px-4">
+            @Body
+        </article>
+    </main>
+</div>
+
+<div id="blazor-error-ui">
+    Ocorreu um erro inesperado.
+    <a href="" class="reload">Recarregar</a>
+    <a class="dismiss">🗙</a>
+</div>

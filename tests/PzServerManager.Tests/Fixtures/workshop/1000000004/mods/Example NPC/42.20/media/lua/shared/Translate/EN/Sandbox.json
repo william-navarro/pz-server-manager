@@ -1,0 +1,9 @@
+{
+  "Sandbox_ExampleNpc_Page": "EXAMPLE NPC",
+  "Sandbox_ExampleNpc_EncounterChance": "Encounter chance",
+  "Sandbox_ExampleNpc_EncounterChance_tooltip": "Chance for a synthetic encounter.",
+  "Sandbox_ExampleNpc_Mode": "Director mode",
+  "Sandbox_ExampleNpc_Mode_option1": "Low",
+  "Sandbox_ExampleNpc_Mode_option2": "Normal",
+  "Sandbox_ExampleNpc_Mode_option3": "High"
+}

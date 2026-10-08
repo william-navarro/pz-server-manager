@@ -1,0 +1,35 @@
+#!/bin/bash
+# Atualiza o servidor dedicado com backup obrigatório. Executado como root.
+set -euo pipefail
+ENV_FILE=/etc/pzmanager/server.env
+[[ -r "$ENV_FILE" ]] && . "$ENV_FILE"
+: "${PZ_SERVER_NAME:=servertest}"
+: "${PZ_ROOT:=/opt/pzserver}"
+[[ "$PZ_SERVER_NAME" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "PZ_SERVER_NAME inválido"; exit 2; }
+[[ "$PZ_ROOT" == /* && "$PZ_ROOT" != / && "$PZ_ROOT" != *..* ]] || { echo "PZ_ROOT inválido"; exit 2; }
+INSTALL="$PZ_ROOT/pz"
+STEAMCMD="$PZ_ROOT/steamcmd/steamcmd.sh"
+JSON="$INSTALL/ProjectZomboid64.json"
+
+[[ "$(realpath -e "$INSTALL")" == "$INSTALL" ]] || { echo "instalação inválida"; exit 2; }
+[[ -x "$STEAMCMD" ]] || { echo "SteamCMD não encontrado: $STEAMCMD"; exit 2; }
+[[ -x /usr/local/sbin/pz-backup ]] || { echo "pz-backup não encontrado"; exit 2; }
+
+echo "etapa 1/5: backup obrigatório"
+/usr/local/sbin/pz-backup atualizacao-jogo
+echo "etapa 2/5: parando o servidor"
+systemctl stop pzserver.service
+stopped=1
+trap 'if [[ ${stopped:-0} == 1 ]]; then echo "falha: religando o servidor com a instalação disponível"; systemctl start pzserver.service || true; fi' EXIT
+
+echo "etapa 3/5: SteamCMD app_update 380870 validate"
+runuser -u pzserver -- "$STEAMCMD" +force_install_dir "$INSTALL" +login anonymous +app_update 380870 validate +quit
+echo "etapa 4/5: reaplicando ajustes locais"
+sed -i 's/"-Xmx[0-9]*[gGmM]"/"-Xmx5g"/' "$JSON"
+chown pzserver:pzserver "$JSON"
+if [[ -x /usr/local/sbin/pz-minusculas ]]; then runuser -u pzserver -- /usr/local/sbin/pz-minusculas; fi
+echo "etapa 5/5: iniciando o servidor"
+systemctl start pzserver.service
+stopped=0
+trap - EXIT
+echo "atualização concluída; build instalado: $(sed -n 's/.*"buildid"[[:space:]]*"\([0-9]*\)".*/\1/p' "$INSTALL/steamapps/appmanifest_380870.acf" | head -1)"

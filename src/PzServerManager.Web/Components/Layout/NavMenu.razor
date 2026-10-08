@@ -1,0 +1,30 @@
+@inject Microsoft.Extensions.Options.IOptions<ManagerOptions> Options
+
+<div class="top-row ps-3 navbar navbar-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href=""><span class="brand-mark">PZ</span><span>Server Manager</span></a>
+    </div>
+</div>
+
+<input type="checkbox" title="Abrir menu de navegação" class="navbar-toggler" />
+
+<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
+    <nav class="flex-column">
+        <div class="nav-item px-3"><NavLink class="nav-link" href="" Match="NavLinkMatch.All"><span class="nav-symbol" aria-hidden="true">⌂</span> Visão geral</NavLink></div>
+        <div class="nav-item px-3"><NavLink class="nav-link" href="servidores"><span class="nav-symbol" aria-hidden="true">▣</span> Servidores</NavLink></div>
+        @if (Options.Value.ManagedServer is not null)
+        {
+            <div class="nav-item px-3"><NavLink class="nav-link" href="console"><span class="nav-symbol" aria-hidden="true">&gt;_</span> Console ao vivo</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="jogadores"><span class="nav-symbol" aria-hidden="true">♟</span> Jogadores</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="cardinal"><span class="nav-symbol" aria-hidden="true">✦</span> Cardinal</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="whitelist"><span class="nav-symbol" aria-hidden="true">✓</span> Whitelist</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="configuracoes"><span class="nav-symbol" aria-hidden="true">⚙</span> Configurações</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="mundo-e-mods"><span class="nav-symbol" aria-hidden="true">◎</span> Mundo e mods</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="mods"><span class="nav-symbol" aria-hidden="true">◇</span> Mods</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="backups"><span class="nav-symbol" aria-hidden="true">↻</span> Backups</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="atualizacoes"><span class="nav-symbol" aria-hidden="true">⇧</span> Atualizações</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="historico-configuracoes"><span class="nav-symbol" aria-hidden="true">≋</span> Histórico de configs</NavLink></div>
+            <div class="nav-item px-3"><NavLink class="nav-link" href="graficos"><span class="nav-symbol" aria-hidden="true">⌁</span> Gráficos</NavLink></div>
+        }
+    </nav>
+</div>

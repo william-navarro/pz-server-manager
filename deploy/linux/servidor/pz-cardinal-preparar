@@ -1,0 +1,17 @@
+#!/bin/sh
+# Reaplica a ponte server-side após cada atualização do Dedicated Server.
+set -eu
+ENV_FILE=/etc/pzmanager/server.env
+[ -r "$ENV_FILE" ] && . "$ENV_FILE"
+: "${PZ_SERVER_NAME:=servertest}"
+: "${PZ_ROOT:=/opt/pzserver}"
+case "$PZ_SERVER_NAME" in *[!A-Za-z0-9_-]*|'') echo "PZ_SERVER_NAME inválido"; exit 2;; esac
+[ "${#PZ_SERVER_NAME}" -le 32 ] || { echo "PZ_SERVER_NAME inválido"; exit 2; }
+case "$PZ_ROOT" in /*) ;; *) echo "PZ_ROOT inválido"; exit 2;; esac
+[ "$PZ_ROOT" != / ] && ! printf '%s' "$PZ_ROOT" | grep -q '\.\.' || { echo "PZ_ROOT inválido"; exit 2; }
+SOURCE="$PZ_ROOT/cardinal/CardinalBridge.lua"
+DESTINATION="$PZ_ROOT/pz/media/lua/server/CardinalBridge.lua"
+test -r "$SOURCE"
+mkdir -p "$(dirname "$DESTINATION")"
+cp "$SOURCE" "$DESTINATION"
+chmod 0644 "$DESTINATION"

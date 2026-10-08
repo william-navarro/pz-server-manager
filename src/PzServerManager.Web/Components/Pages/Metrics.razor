@@ -1,0 +1,48 @@
+@page "/graficos"
+@attribute [Authorize]
+@inject IMetricsStore MetricsStore
+@inject IJSRuntime JS
+
+<PageTitle>Gráficos — PZ Server Manager</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">TELEMETRIA</p><h1>Gráficos</h1><p class="page-description">RAM, CPU e jogadores coletados a cada minuto, com retenção de sete dias.</p></div><div class="action-buttons"><button class="btn @RangeClass(24)" @onclick="() => LoadAsync(24)">24 horas</button><button class="btn @RangeClass(168)" @onclick="() => LoadAsync(168)">7 dias</button></div></div>
+@if (!string.IsNullOrWhiteSpace(_error)) { <div class="alert alert-danger">@_error</div> }
+<div class="metric-grid">
+    <div class="metric-card"><span class="metric-label">RAM atual</span><strong>@FormatMemory(_last?.MemoryBytes)</strong><span class="metric-help">limite Java: 5 GiB · @MemoryPercent(_last?.MemoryBytes)</span></div>
+    <div class="metric-card"><span class="metric-label">CPU atual</span><strong>@(_last?.CpuPercent?.ToString("0.0") ?? "—")%</strong><span class="metric-help">uso do cgroup do serviço</span></div>
+    <div class="metric-card"><span class="metric-label">Jogadores</span><strong>@(_last?.PlayersOnline?.ToString() ?? "—")</strong><span class="metric-help">via RCON</span></div>
+</div>
+<section class="panel-card charts-panel"><div class="chart-box"><h2>RAM (GiB)</h2><canvas id="ram-chart"></canvas></div><div class="chart-box"><h2>CPU (%)</h2><canvas id="cpu-chart"></canvas></div><div class="chart-box"><h2>Jogadores online</h2><canvas id="players-chart"></canvas></div></section>
+<section class="panel-card updates-history"><div class="panel-title"><div><p class="eyebrow">MARCAS</p><h2>Reinícios e atualizações</h2></div></div><div class="table-responsive"><table class="data-table"><thead><tr><th>Quando</th><th>Tipo</th><th>Evento</th></tr></thead><tbody>@foreach (var item in _snapshot.Events.OrderByDescending(item => item.Timestamp)) { <tr><td>@item.Timestamp.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss")</td><td>@item.Kind</td><td>@item.Label</td></tr> }</tbody></table></div></section>
+
+@code {
+    private MetricsSnapshot _snapshot = new([], []); private MetricSample? _last; private int _hours = 24; private string? _error; private bool _renderPending;
+    protected override Task OnInitializedAsync() => LoadAsync(24);
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_renderPending) return;
+        _renderPending = false;
+        try { await RenderChartsAsync(); }
+        catch (JSException e) { _error = $"Não foi possível desenhar os gráficos: {e.Message}"; await InvokeAsync(StateHasChanged); }
+    }
+    private async Task LoadAsync(int hours)
+    {
+        _hours = hours;
+        try
+        {
+            _snapshot = await MetricsStore.ReadAsync(DateTimeOffset.UtcNow.AddHours(-hours)); _last = _snapshot.Samples.LastOrDefault(); _error = null; _renderPending = true;
+        }
+        catch (JSException e) { _error = $"Não foi possível desenhar os gráficos: {e.Message}"; }
+        catch (Exception e) { _error = e.Message; }
+    }
+    private async Task RenderChartsAsync()
+    {
+        var events = _snapshot.Events.Select(item => new { t = item.Timestamp.ToUnixTimeMilliseconds(), label = item.Label }).ToArray();
+        await RenderAsync("ram-chart", _snapshot.Samples.Select(item => new { t = item.Timestamp.ToUnixTimeMilliseconds(), v = item.MemoryBytes / (1024d * 1024 * 1024) }).ToArray(), events, 5);
+        await RenderAsync("cpu-chart", _snapshot.Samples.Select(item => new { t = item.Timestamp.ToUnixTimeMilliseconds(), v = item.CpuPercent }).ToArray(), events, (double?)null);
+        await RenderAsync("players-chart", _snapshot.Samples.Select(item => new { t = item.Timestamp.ToUnixTimeMilliseconds(), v = item.PlayersOnline }).ToArray(), events, (double?)null);
+    }
+    private async Task RenderAsync(string id, object points, object events, double? limit) { try { await JS.InvokeVoidAsync("pzCharts.render", id, points, events, limit); } catch (JSException) { throw; } }
+    private string RangeClass(int value) => _hours == value ? "btn-primary" : "btn-secondary";
+    private static string FormatMemory(long? value) => value is null ? "—" : $"{value / (1024d * 1024 * 1024):0.00} GiB";
+    private static string MemoryPercent(long? value) => value is null ? "percentual indisponível" : $"{value / (5d * 1024 * 1024 * 1024):P0} do limite";
+}

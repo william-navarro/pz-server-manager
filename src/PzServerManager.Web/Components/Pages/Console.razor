@@ -1,0 +1,150 @@
+@page "/console"
+@attribute [Authorize]
+@implements IAsyncDisposable
+@inject IServiceProvider Services
+@inject Microsoft.Extensions.Options.IOptions<ManagerOptions> Options
+@inject IJSRuntime JS
+
+<PageTitle>Console ao vivo — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div><p class="eyebrow">JOURNAL E FIFO</p><h1>Console ao vivo</h1><p class="page-description">Acompanhe o log do jogo e envie comandos administrativos.</p></div>
+    <button class="btn btn-outline-secondary" @onclick="TogglePause">@(_pauseScroll ? "Retomar rolagem" : "Pausar rolagem")</button>
+</div>
+
+@if (Options.Value.ManagedServer is null)
+{
+    <div class="alert alert-warning">Configure <code>PzManager:ManagedServer</code> para usar o console Linux.</div>
+}
+else
+{
+    <section class="panel-card console-toolbar">
+        <div class="form-field filter-field">
+            <label for="log-filter">Filtrar log</label>
+            <input id="log-filter" class="form-control" @bind="_filter" @bind:event="oninput" placeholder="Texto contido na linha" />
+        </div>
+        <span class="tag tag-neutral">@_lines.Count / 1000 linhas</span>
+    </section>
+
+    @if (!string.IsNullOrWhiteSpace(_streamError))
+    {
+        <div class="alert alert-danger">@_streamError</div>
+    }
+
+    <section class="live-console panel-card" @ref="_consoleElement">
+        @foreach (var line in FilteredLines)
+        {
+            <div class="console-line @LineClass(line)">@line</div>
+        }
+    </section>
+
+    <section class="panel-card command-panel">
+        <div class="panel-title"><div><p class="eyebrow">COMANDO</p><h2>Enviar ao servidor</h2></div></div>
+        <div class="command-row">
+            <input class="form-control" maxlength="300" @bind="_command" @onkeydown="HandleCommandKey" placeholder="Digite um comando" />
+            <button class="btn btn-primary" disabled="@_sending" @onclick="SendCommandAsync">@(_sending ? "Enviando..." : "Enviar")</button>
+        </div>
+        <div class="shortcut-row">
+            <span>Atalhos:</span>
+            <button type="button" @onclick='() => SetCommand("save")'>save</button>
+            <button type="button" @onclick='() => SetCommand("players")'>players</button>
+            <button type="button" @onclick='() => SetCommand("servermsg \"texto\"")'>servermsg "texto"</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_commandMessage))
+        {
+            <div class="alert @(_commandSucceeded ? "alert-success" : "alert-danger") command-message">@_commandMessage</div>
+        }
+    </section>
+}
+
+@code {
+    private readonly CancellationTokenSource _disposeSource = new();
+    private readonly List<string> _lines = [];
+    private ElementReference _consoleElement;
+    private IServerLogStream? _logStream;
+    private IServerConsole? _serverConsole;
+    private Task? _streamTask;
+    private string _filter = string.Empty;
+    private string _command = string.Empty;
+    private string? _streamError;
+    private string? _commandMessage;
+    private bool _commandSucceeded;
+    private bool _pauseScroll;
+    private bool _sending;
+    private bool _rendered;
+
+    private IEnumerable<string> FilteredLines => string.IsNullOrWhiteSpace(_filter)
+        ? _lines
+        : _lines.Where(line => line.Contains(_filter, StringComparison.OrdinalIgnoreCase));
+
+    protected override Task OnInitializedAsync()
+    {
+        if (Options.Value.ManagedServer is not null)
+        {
+            _logStream = Services.GetRequiredService<IServerLogStream>();
+            _serverConsole = Services.GetRequiredService<IServerConsole>();
+            _streamTask = ConsumeLogAsync(_disposeSource.Token);
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task ConsumeLogAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var line in _logStream!.FollowAsync(300, cancellationToken))
+            {
+                await InvokeAsync(async () =>
+                {
+                    _lines.Add(line);
+                    if (_lines.Count > 1000) _lines.RemoveAt(0);
+                    StateHasChanged();
+                    if (_rendered && !_pauseScroll) await JS.InvokeVoidAsync("pzConsole.scrollToEnd", _consoleElement);
+                });
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            await InvokeAsync(() => { _streamError = $"A leitura do journal foi encerrada: {exception.Message}"; StateHasChanged(); });
+        }
+    }
+
+    private async Task SendCommandAsync()
+    {
+        _sending = true; _commandMessage = null;
+        try
+        {
+            await _serverConsole!.SendAsync(_command, _disposeSource.Token);
+            _commandMessage = "Comando enviado."; _commandSucceeded = true; _command = string.Empty;
+        }
+        catch (Exception exception)
+        {
+            _commandMessage = exception is ArgumentException ? exception.Message : $"Não foi possível enviar: {exception.Message}";
+            _commandSucceeded = false;
+        }
+        finally { _sending = false; }
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        _rendered = true;
+        return Task.CompletedTask;
+    }
+
+    private async Task HandleCommandKey(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter" && !_sending) await SendCommandAsync();
+    }
+
+    private void SetCommand(string command) => _command = command;
+    private void TogglePause() => _pauseScroll = !_pauseScroll;
+    private static string LineClass(string line) => line.Contains("ERROR", StringComparison.OrdinalIgnoreCase) ? "console-error" : line.Contains("WARN", StringComparison.OrdinalIgnoreCase) ? "console-warn" : string.Empty;
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposeSource.Cancel();
+        if (_streamTask is not null) await _streamTask;
+        _disposeSource.Dispose();
+    }
+}

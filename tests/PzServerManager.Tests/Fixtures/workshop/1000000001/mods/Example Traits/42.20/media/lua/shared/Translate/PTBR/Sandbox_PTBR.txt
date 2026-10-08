@@ -1,0 +1,5 @@
+Sandbox_PTBR = {
+    Sandbox_ExampleTraits_Page = "TRAÇOS DE EXEMPLO",
+    Sandbox_ExampleTraits_BandageAmount = "Quantidade de bandagens",
+    Sandbox_ExampleTraits_Distance = "Distância do efeito",
+}

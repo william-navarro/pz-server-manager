@@ -1,0 +1,361 @@
+@page "/mods"
+@attribute [Authorize]
+@implements IAsyncDisposable
+@inject ModManagerService ModService
+@inject IWorkshopDownloader Downloader
+@inject IWorkshopMetadataClient MetadataClient
+@inject ServerRestartCoordinator RestartCoordinator
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject Microsoft.Extensions.Options.IOptions<ManagerOptions> Options
+
+<PageTitle>Mods — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div><p class="eyebrow">STEAM WORKSHOP</p><h1>Mods</h1><p class="page-description">Baixe, inspecione e ordene mods do Build @ServerVersion sem perder o controle do arquivo INI.</p></div>
+    <button class="btn btn-outline-success" disabled="@_busy" @onclick="LoadAsync">Recarregar</button>
+</div>
+
+@if (_error is not null) { <div class="alert alert-danger">@_error</div> }
+@if (_message is not null) { <div class="alert alert-success">@_message</div> }
+
+<section class="panel-card mods-add-panel">
+    <div class="panel-title"><div><p class="eyebrow">ADICIONAR</p><h2>IDs ou URLs da Workshop</h2></div><span class="tag tag-neutral">até 100 por consulta</span></div>
+            <div class="form-field"><label for="workshop-input">Cole um ou vários valores, separados por espaço, vírgula ou linha</label><textarea id="workshop-input" class="form-control" rows="3" placeholder="1000000001&#10;https://steamcommunity.com/sharedfiles/filedetails/?id=1000000002" @bind="_addInput"></textarea></div>
+    <button class="btn btn-primary" disabled="@_busy" @onclick="DownloadAndAddAsync">Baixar e inspecionar</button>
+    @if (_downloadLog.Count > 0)
+    {
+        <div class="operation-console mods-console"><pre>@string.Join(Environment.NewLine, _downloadLog)</pre></div>
+    }
+</section>
+
+<section class="panel-card">
+    <div class="panel-title"><div><p class="eyebrow">ORDEM DE CARREGAMENTO</p><h2>Mods ativos</h2></div><div class="action-buttons"><span class="tag tag-neutral">@_mods.Count ativo(s)</span><button class="btn btn-sm btn-outline-success" disabled="@(_busy || _mods.Count < 2)" @onclick="AutoOrder">Ordem automática</button></div></div>
+    @if (_mods.Count == 0)
+    {
+        <div class="empty-state"><strong>Nenhum mod ativo</strong><span>Adicione um item da Workshop para começar.</span></div>
+    }
+    else
+    {
+        <div class="table-responsive"><table class="data-table mods-table"><thead><tr><th>#</th><th>Mod ID</th><th>Nome</th><th>Workshop</th><th>Estado</th><th>Ações</th></tr></thead><tbody>
+        @for (var index = 0; index < _mods.Count; index++)
+        {
+            var rowIndex = index;
+            var mod = Describe(_mods[index]);
+            <tr>
+                <td>@(index + 1)</td>
+                <td><code>@mod.Id</code></td>
+                <td>@mod.Name</td>
+                <td>@(mod.WorkshopTitle ?? mod.WorkshopItemId ?? "não identificado")</td>
+                <td><span class="tag @StateClass(mod.State)">@StateLabel(mod)</span></td>
+                <td><div class="action-buttons"><button title="Subir" class="btn btn-sm btn-outline-success" disabled="@(index == 0)" @onclick="() => Move(rowIndex, -1)">↑</button><button title="Descer" class="btn btn-sm btn-outline-success" disabled="@(index == _mods.Count - 1)" @onclick="() => Move(rowIndex, 1)">↓</button><button class="btn btn-sm btn-outline-warning" @onclick="() => DisableMod(mod.Id)">Desativar</button></div></td>
+            </tr>
+        }
+        </tbody></table></div>
+    }
+</section>
+
+@if (DependencyIssues.Count > 0)
+{
+    <section class="panel-card dependency-panel">
+        <div class="panel-title"><div><p class="eyebrow">DEPENDÊNCIAS</p><h2>Requer ações</h2></div><span class="tag tag-danger">@DependencyIssues.Count pendência(s)</span></div>
+        <ul class="dependency-list">
+        @foreach (var issue in DependencyIssues)
+        {
+            <li><span>O mod <code>@issue.ModId</code> precisa de <code>@issue.RequiredModId</code>.</span>
+                @if (issue.ProviderItemIds.Count == 0)
+                { <strong>Adicione o item da Workshop que contém @issue.RequiredModId.</strong> }
+                else
+                { <button class="btn btn-sm btn-outline-warning" @onclick="() => AddProvider(issue)">Adicionar pelo item @issue.ProviderItemIds[0]</button> }
+            </li>
+        }
+        </ul>
+    </section>
+}
+
+<section class="panel-card">
+    <div class="panel-title"><div><p class="eyebrow">ITENS</p><h2>Conteúdo selecionado</h2></div><span class="tag tag-neutral">@_items.Count item(ns)</span></div>
+    @if (_items.Count == 0)
+    {
+        <p class="page-description">Ainda não há itens da Workshop configurados.</p>
+    }
+    <div class="workshop-items">
+    @foreach (var itemId in _items)
+    {
+        var item = _downloaded.GetValueOrDefault(itemId);
+        var itemMetadata = _metadata.GetValueOrDefault(itemId);
+        <article class="workshop-item">
+            <div class="workshop-item-heading"><div><strong>@ItemTitle(itemId)</strong><small>Workshop @itemId@if (itemMetadata is not null) { <text> · @FormatSize(itemMetadata.SizeBytes) · atualizado @FormatDate(itemMetadata.UpdatedAt)@if (itemMetadata.Tags.Count > 0) { <text> · @string.Join(", ", itemMetadata.Tags)</text> }</text> }</small></div><button class="btn btn-sm btn-outline-danger" @onclick="() => AskRemoveItem(itemId)">Remover item</button></div>
+            @if (item is null)
+            { <div class="alert alert-warning">Este item não foi baixado pelo painel. Baixe novamente para inspecioná-lo.</div> }
+            else if (item.Mods.Count == 0)
+            { <div class="alert alert-warning">Nenhum mod compatível com a estrutura B42 foi encontrado neste item.</div> }
+            else
+            {
+                <div class="item-mod-list">
+                @foreach (var mod in item.Mods)
+                {
+                    <label class="item-mod-option"><input type="checkbox" checked="@_mods.Contains(mod.Id)" @onchange="e => ToggleMod(itemId, mod.Id, Convert.ToBoolean(e.Value))" /><span><strong>@mod.Name</strong><code>@mod.Id</code><small>Pasta @mod.VersionFolder@(mod.Requires.Count > 0 ? $" · requer {string.Join(", ", mod.Requires)}" : string.Empty)@(!mod.IsCompatible ? " · incompatível com o servidor" : string.Empty)</small></span></label>
+                }
+                </div>
+            }
+        </article>
+    }
+    </div>
+</section>
+
+@if (AvailableMaps.Count > 0)
+{
+    <section class="panel-card">
+        <div class="panel-title"><div><p class="eyebrow">MAPAS</p><h2>Map=</h2></div><span class="tag tag-neutral">antes de Muldraugh, KY</span></div>
+        @foreach (var map in AvailableMaps)
+        { <label class="check-label"><input type="checkbox" checked="@_maps.Contains(map)" @onchange="e => ToggleMap(map, Convert.ToBoolean(e.Value))" /> Incluir <code>@map</code></label> }
+    </section>
+}
+
+<div class="sticky-actions"><button class="btn btn-primary" disabled="@(_busy || _snapshot is null)" @onclick="Review">Revisar e salvar</button></div>
+
+@if (_preview is not null)
+{
+    <section class="panel-card confirmation-box mods-preview">
+        <strong>Confira antes de gravar</strong>
+        <div class="ini-diff"><div><span>WorkshopItems antes</span><code>@Join(_preview.WorkshopItemsBefore)</code><span>depois</span><code>@Join(_preview.WorkshopItemsAfter)</code></div><div><span>Mods antes</span><code>@Join(_preview.ModsBefore)</code><span>depois</span><code>@Join(_preview.ModsAfter)</code></div><div><span>Map antes</span><code>@Join(_preview.MapsBefore)</code><span>depois</span><code>@Join(_preview.MapsAfter)</code></div></div>
+        <div class="action-buttons"><button class="btn btn-danger" disabled="@_busy" @onclick="SaveAsync">Gravar com backup</button><button class="btn btn-secondary" @onclick="() => _preview = null">Voltar</button></div>
+    </section>
+}
+
+@if (_pendingRemoval is not null)
+{
+    <section class="panel-card confirmation-box"><strong>Remover o item @_pendingRemoval?</strong><p>Seus Mod IDs serão removidos.@if (_removalDependents.Count > 0) { <text> Os mods @string.Join(", ", _removalDependents) ainda dependem dele.</text> }</p><div class="action-buttons"><button class="btn btn-danger" @onclick="ConfirmRemoveItem">Remover</button><button class="btn btn-secondary" @onclick="() => _pendingRemoval = null">Cancelar</button></div></section>
+}
+
+@if (_saved)
+{
+    <div class="alert alert-warning restart-notice"><span>Os mods valem no próximo reinício.</span><button class="btn btn-outline-warning" @onclick="RestartAsync">Reiniciar agora</button></div>
+}
+@if (_restartPlayers is not null)
+{
+    <section class="panel-card confirmation-box"><strong>Há @_restartPlayers.Count jogador(es) online.</strong><p>@string.Join(", ", _restartPlayers). Avise a todos e reinicie em 5 minutos, ou cancele.</p><button class="btn btn-outline-warning" @onclick="StartWarnedRestart">Avisar e reiniciar em 5 min</button><button class="btn btn-secondary" @onclick="() => _restartPlayers = null">Cancelar</button></section>
+}
+@if (_restartTask is not null)
+{
+    <div class="alert alert-warning restart-notice"><span>Reinício avisado em andamento.</span><button class="btn btn-outline-warning" @onclick="CancelRestart">Cancelar reinício</button></div>
+}
+
+@code {
+    private readonly List<string> _items = [];
+    private readonly List<string> _mods = [];
+    private readonly List<string> _maps = [];
+    private readonly List<string> _downloadLog = [];
+    private readonly Dictionary<string, WorkshopItemInspection> _downloaded = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, WorkshopItemMetadata> _metadata = new(StringComparer.Ordinal);
+    private readonly CancellationTokenSource _disposeSource = new();
+    private ModManagerSnapshot? _snapshot;
+    private ModConfigurationChange? _preview;
+    private string _addInput = string.Empty;
+    private string? _error, _message, _pendingRemoval;
+    private IReadOnlyList<string> _removalDependents = [];
+    private IReadOnlyList<string>? _restartPlayers;
+    private Task? _restartTask;
+    private bool _busy, _saved;
+
+    private string IniPath => Options.Value.ManagedServer!.ServerIniPath;
+    private string ServerVersion => Options.Value.ManagedServer!.ServerVersion;
+    private IReadOnlyList<DependencyIssue> DependencyIssues => ModDependencyResolver.FindMissing(_mods, _downloaded.Values);
+    private IReadOnlyList<string> AvailableMaps => _downloaded.Values.SelectMany(item => item.Mods).Where(mod => _mods.Contains(mod.Id)).SelectMany(mod => mod.MapNames).Distinct(StringComparer.Ordinal).OrderBy(map => map, StringComparer.Ordinal).ToArray();
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _busy = true; _error = _message = null; _preview = null; _saved = false;
+        try
+        {
+            _snapshot = await ModService.LoadAsync(IniPath, ServerVersion, _disposeSource.Token);
+            _items.Clear(); _items.AddRange(_snapshot.WorkshopItems);
+            _mods.Clear(); _mods.AddRange(_snapshot.ModIds);
+            _maps.Clear(); _maps.AddRange(_snapshot.Maps);
+            _downloaded.Clear(); foreach (var pair in _snapshot.DownloadedItems) _downloaded[pair.Key] = pair.Value;
+            _metadata.Clear(); foreach (var pair in _snapshot.Metadata) _metadata[pair.Key] = pair.Value;
+        }
+        catch (Exception exception) { _error = $"Não foi possível carregar os mods: {exception.Message}"; }
+        finally { _busy = false; }
+    }
+
+    private async Task DownloadAndAddAsync()
+    {
+        _busy = true; _error = _message = null; _preview = null; _downloadLog.Clear();
+        try
+        {
+            var ids = WorkshopIdParser.ParseMany(_addInput);
+            var repeated = ids.FirstOrDefault(_items.Contains);
+            if (repeated is not null) throw new ArgumentException($"O item da Workshop {repeated} já está na lista.");
+            var progress = new Progress<string>(line => { _downloadLog.Add(line); _ = InvokeAsync(StateHasChanged); });
+            await Downloader.DownloadAsync(ids, progress, _disposeSource.Token);
+
+            var inspections = ids.Select(id => ModService.InspectItem(id, ServerVersion)).ToArray();
+            foreach (var inspection in inspections)
+            {
+                if (inspection.Mods.Count == 0) throw new InvalidOperationException($"O item {inspection.ItemId} não contém mods B42 reconhecidos.");
+            }
+            RefuseDuplicateProviders(inspections);
+            foreach (var inspection in inspections)
+            {
+                _downloaded[inspection.ItemId] = inspection;
+                _items.Add(inspection.ItemId);
+                foreach (var modId in ModDependencyResolver.SelectDefaults(inspection)) EnableModWithLocalRequirements(inspection, modId);
+            }
+            try
+            {
+                var metadata = await MetadataClient.GetAsync(ids, _disposeSource.Token);
+                foreach (var pair in metadata) _metadata[pair.Key] = pair.Value;
+            }
+            catch (Exception exception) when (!_disposeSource.IsCancellationRequested)
+            {
+                _downloadLog.Add($"Metadados indisponíveis: {exception.Message}");
+            }
+            _addInput = string.Empty;
+            _message = "Download concluído. Revise as caixas de seleção e as dependências antes de salvar.";
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+
+    private void ToggleMod(string itemId, string modId, bool enabled)
+    {
+        ClearReview();
+        if (enabled)
+        {
+            EnableModWithLocalRequirements(_downloaded[itemId], modId);
+        }
+        else
+        {
+            _mods.Remove(modId);
+        }
+    }
+
+    private void EnableModWithLocalRequirements(WorkshopItemInspection item, string modId)
+    {
+        var byId = item.Mods.ToDictionary(mod => mod.Id, StringComparer.Ordinal);
+        var pending = new Stack<string>(); pending.Push(modId);
+        while (pending.TryPop(out var current))
+        {
+            if (!_mods.Contains(current)) _mods.Add(current);
+            if (byId.TryGetValue(current, out var mod))
+                foreach (var required in mod.Requires.Where(byId.ContainsKey)) pending.Push(required);
+        }
+    }
+
+    private void DisableMod(string modId) { ClearReview(); _mods.Remove(modId); }
+    private void Move(int index, int offset) { ClearReview(); var item = _mods[index]; _mods.RemoveAt(index); _mods.Insert(index + offset, item); }
+    private void AutoOrder()
+    {
+        ClearReview();
+        try
+        {
+            var sorted = ModDependencyResolver.Sort(_mods, _downloaded.Values);
+            if (!sorted.Success) throw new InvalidOperationException($"Foi detectado um ciclo entre: {string.Join(", ", sorted.CycleModIds)}.");
+            _mods.Clear(); _mods.AddRange(sorted.OrderedModIds); _message = "Dependências posicionadas antes dos mods que precisam delas.";
+        }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+
+    private void AddProvider(DependencyIssue issue)
+    {
+        ClearReview();
+        var itemId = issue.ProviderItemIds[0];
+        var item = _downloaded[itemId];
+        if (!_items.Contains(itemId)) { RefuseDuplicateProviders([item]); _items.Add(itemId); }
+        EnableModWithLocalRequirements(item, issue.RequiredModId);
+    }
+
+    private void AskRemoveItem(string itemId)
+    {
+        var provided = _downloaded.GetValueOrDefault(itemId)?.Mods.Select(mod => mod.Id).ToArray() ?? [];
+        var remaining = _mods.Where(id => !provided.Contains(id, StringComparer.Ordinal)).ToArray();
+        _removalDependents = ModDependencyResolver.FindDependents(provided, remaining, _downloaded.Values);
+        _pendingRemoval = itemId;
+    }
+
+    private void ConfirmRemoveItem()
+    {
+        ClearReview();
+        var itemId = _pendingRemoval!;
+        var provided = _downloaded.GetValueOrDefault(itemId)?.Mods.Select(mod => mod.Id).ToHashSet(StringComparer.Ordinal) ?? [];
+        _mods.RemoveAll(provided.Contains); _items.Remove(itemId); _pendingRemoval = null;
+    }
+
+    private void ToggleMap(string map, bool enabled)
+    {
+        ClearReview(); var changed = ModManagerService.SetMapEnabled(_maps, [map], enabled); _maps.Clear(); _maps.AddRange(changed);
+    }
+
+    private void Review()
+    {
+        _error = _message = null;
+        try
+        {
+            _preview = ModService.BuildChange(_snapshot!, _items, _mods, _maps);
+            if (!_preview.HasChanges) { _preview = null; _message = "Nenhuma alteração para salvar."; }
+        }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+
+    private async Task SaveAsync()
+    {
+        _busy = true; _error = _message = null;
+        try
+        {
+            await ModService.SaveAsync(IniPath, _snapshot!, _items, _mods, _maps, await ActorAsync(), _disposeSource.Token);
+            _message = "WorkshopItems, Mods e Map gravados com backup automático."; _saved = true;
+            _snapshot = await ModService.LoadAsync(IniPath, ServerVersion, _disposeSource.Token); _preview = null;
+        }
+        catch (ServerSettingsConflictException exception) { _error = exception.Message; _preview = null; }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+
+    private ManagedMod Describe(string modId)
+    {
+        var item = _items.Select(id => _downloaded.GetValueOrDefault(id)).Where(item => item is not null)
+            .FirstOrDefault(item => item!.Mods.Any(mod => mod.Id == modId));
+        var mod = item?.Mods.First(candidate => candidate.Id == modId);
+        if (item is null || mod is null) return new(modId, modId, null, null, [], [], [], null, ManagedModState.ItemNotDownloaded);
+        var missing = mod.Requires.Where(required => !_mods.Contains(required)).ToArray();
+        var state = !mod.IsCompatible ? ManagedModState.Incompatible : missing.Length > 0 ? ManagedModState.MissingDependency : ManagedModState.Ok;
+        return new(mod.Id, mod.Name, item.ItemId, ItemTitle(item.ItemId), mod.Requires, missing, mod.MapNames, mod.VersionFolder, state);
+    }
+
+    private void RefuseDuplicateProviders(IReadOnlyList<WorkshopItemInspection> candidates)
+    {
+        var providers = _items.Where(_downloaded.ContainsKey)
+            .SelectMany(id => _downloaded[id].Mods.Select(mod => (ItemId: id, mod.Id)))
+            .Concat(candidates.SelectMany(item => item.Mods.Select(mod => (ItemId: item.ItemId, mod.Id))));
+        var duplicate = providers.GroupBy(entry => entry.Id, StringComparer.Ordinal).FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null) throw new ArgumentException($"O Mod ID {duplicate.Key} é fornecido mais de uma vez pelos itens selecionados.");
+    }
+
+    private string ItemTitle(string itemId) => _metadata.GetValueOrDefault(itemId)?.Title ?? itemId;
+    private static string FormatDate(DateTimeOffset? value) => value?.ToLocalTime().ToString("dd/MM/yyyy") ?? "data desconhecida";
+    private static string FormatSize(long? value) => value is null ? "tamanho desconhecido" : value >= 1024 * 1024 ? $"{value.Value / 1024d / 1024d:0.##} MB" : $"{value.Value / 1024d:0.##} KB";
+    private static string StateClass(ManagedModState state) => state switch { ManagedModState.Ok => "tag-success", ManagedModState.ItemNotDownloaded => "tag-warning", _ => "tag-danger" };
+    private static string StateLabel(ManagedMod mod) => mod.State switch { ManagedModState.Ok => "ok", ManagedModState.ItemNotDownloaded => "item não baixado", ManagedModState.Incompatible => "incompatível com a versão", _ => $"falta {string.Join(", ", mod.MissingDependencies)}" };
+    private static string Join(IEnumerable<string> values) => string.Join(';', values);
+    private void ClearReview() { _preview = null; _saved = false; _error = _message = null; }
+    private async Task<string> ActorAsync() => (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "desconhecido";
+
+    private async Task RestartAsync()
+    {
+        try { var actor = await ActorAsync(); var players = await RestartCoordinator.GetPlayersAsync(); if (players.Count > 0) { _restartPlayers = players; return; } await RestartCoordinator.RestartNowAsync(actor); _message = "Reinício solicitado."; }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+    private void StartWarnedRestart() { _restartPlayers = null; _message = "Reinício programado e primeiro aviso enviado."; _restartTask = RunWarnedRestartAsync(); }
+    private async Task RunWarnedRestartAsync()
+    {
+        try { await RestartCoordinator.WarnAndRestartAsync(await ActorAsync(), _disposeSource.Token); _message = "Reinício solicitado."; }
+        catch (OperationCanceledException) { _message = "Reinício programado cancelado."; }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _restartTask = null; await InvokeAsync(StateHasChanged); }
+    }
+    private void CancelRestart() => RestartCoordinator.Cancel();
+    public async ValueTask DisposeAsync() { _disposeSource.Cancel(); RestartCoordinator.Cancel(); if (_restartTask is not null) await _restartTask; _disposeSource.Dispose(); }
+}

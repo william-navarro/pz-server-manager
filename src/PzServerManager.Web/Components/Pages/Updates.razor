@@ -1,0 +1,95 @@
+@page "/atualizacoes"
+@attribute [Authorize]
+@inject IUpdateManager UpdateManager
+@inject IAutomationSettingsStore SettingsStore
+@inject ServerRestartCoordinator RestartCoordinator
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Atualizações — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div><p class="eyebrow">AUTOMAÇÃO</p><h1>Atualizações e reinícios</h1><p class="page-description">Monitore a Steam, programe o reinício diário e controle a contagem regressiva.</p></div>
+    <button class="btn btn-primary" disabled="@Busy" @onclick="CheckAsync">Verificar agora</button>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_error)) { <div class="alert alert-danger">@_error</div> }
+@if (!string.IsNullOrWhiteSpace(_message)) { <div class="alert alert-success">@_message</div> }
+@if (RestartCoordinator.IsScheduled)
+{
+    <div class="alert alert-warning restart-notice"><span>@RestartCoordinator.State.Reason — execução às @RestartCoordinator.State.ExecuteAt?.ToLocalTime().ToString("HH:mm:ss")</span><button class="btn btn-outline-warning" @onclick="RestartCoordinator.Cancel">Cancelar contagem</button></div>
+}
+
+<div class="metric-grid managed-metrics">
+    <div class="metric-card"><span class="metric-label">Última verificação</span><strong class="compact-value">@FormatDate(_overview?.LastCheckedAt)</strong><span class="metric-help">Steam Workshop e jogo</span></div>
+    <div class="metric-card"><span class="metric-label">Mods desatualizados</span><strong>@(_overview?.OutdatedMods.Count.ToString() ?? "—")</strong><span class="metric-help">comparação por time_updated</span></div>
+    <div class="metric-card"><span class="metric-label">Build instalado</span><strong class="compact-value">@(_overview?.InstalledGameBuild ?? "—")</strong><span class="metric-help">publicado: @(_overview?.PublishedGameBuild ?? "—")</span></div>
+    <div class="metric-card"><span class="metric-label">Modo</span><strong class="compact-value">@ModeLabel(_settings.UpdateMode)</strong><span class="metric-help">a cada @_settings.CheckIntervalMinutes min</span></div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_overview?.LastError)) { <div class="alert alert-danger">Última verificação: @_overview.LastError</div> }
+
+<div class="content-grid">
+    <section class="panel-card">
+        <div class="panel-title"><div><p class="eyebrow">DETECÇÃO</p><h2>Itens aguardando ação</h2></div><button class="btn btn-outline-warning" disabled="@(Busy || !HasUpdates)" @onclick="ApplyAsync">Atualizar agora</button></div>
+        @if (_overview?.IsGameOutdated == true) { <div class="update-item"><strong>Servidor do jogo</strong><span>Build @_overview.InstalledGameBuild → @_overview.PublishedGameBuild</span></div> }
+        @foreach (var mod in _overview?.OutdatedMods ?? []) { <div class="update-item"><strong>@mod.Title</strong><span>Workshop @mod.ItemId · publicado @mod.PublishedAt.ToLocalTime().ToString("dd/MM HH:mm")</span></div> }
+        @if (!HasUpdates) { <div class="empty-state small-empty"><strong>Tudo em dia</strong><span>Nenhuma atualização detectada.</span></div> }
+    </section>
+
+    <section class="panel-card">
+        <div class="panel-title"><div><p class="eyebrow">AGENDA</p><h2>Configuração</h2></div><button class="btn btn-primary" disabled="@Busy" @onclick="SaveSettingsAsync">Salvar</button></div>
+        <div class="form-field"><label>Avisos em segundos (do maior para o menor)</label><input class="form-control" @bind="_warningText" placeholder="300, 60, 10" /></div>
+        <div class="form-field"><label>Intervalo de verificação (minutos)</label><input class="form-control" type="number" min="5" max="1440" @bind="_settings.CheckIntervalMinutes" /></div>
+        <div class="form-field"><label>Ao detectar atualização</label><select class="form-select" @bind="_settings.UpdateMode"><option value="@UpdateMode.Automatico">Automático</option><option value="@UpdateMode.SoAvisar">Só avisar</option></select></div>
+        <label class="check-label"><input type="checkbox" @bind="_settings.DailyRestartEnabled" /> Reinício diário ativado</label>
+        <div class="form-field"><label>Horário diário (HH:mm)</label><input class="form-control" type="text" pattern="[0-2][0-9]:[0-5][0-9]" placeholder="05:30" @bind="_settings.DailyRestartTime" /></div>
+        <p class="page-description">Sem jogadores online, o reinício diário é imediato. Com jogadores, usa os avisos acima.</p>
+    </section>
+</div>
+
+<section class="panel-card updates-history">
+    <div class="panel-title"><div><p class="eyebrow">HISTÓRICO</p><h2>Atualizações executadas</h2></div></div>
+    <div class="table-responsive"><table class="data-table"><thead><tr><th>Quando</th><th>O quê</th><th>Backup</th><th>Resultado</th></tr></thead><tbody>
+    @foreach (var item in _overview?.History ?? []) { <tr><td>@item.Timestamp.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</td><td>@item.Description</td><td>@(item.BackupFileName ?? "—")</td><td><span class="tag @(item.Succeeded ? "tag-success" : "tag-danger")">@item.Result</span></td></tr> }
+    </tbody></table></div>
+</section>
+
+@code {
+    private UpdateOverview? _overview;
+    private AutomationSettings _settings = new();
+    private string _warningText = "300, 60, 10";
+    private bool _working;
+    private string? _error;
+    private string? _message;
+    private bool Busy => _working || UpdateManager.IsBusy;
+    private bool HasUpdates => (_overview?.OutdatedMods.Count ?? 0) > 0 || _overview?.IsGameOutdated == true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _settings = await SettingsStore.LoadAsync();
+        _warningText = string.Join(", ", _settings.WarningSeconds);
+        _overview = await UpdateManager.GetOverviewAsync();
+    }
+    private async Task CheckAsync() => await RunAsync(async actor => { _overview = await UpdateManager.CheckNowAsync(actor); _message = "Verificação concluída."; });
+    private void ApplyAsync() => _ = RunAsync(async actor => { await UpdateManager.ApplyAsync(actor, UpdateTarget.All); _overview = await UpdateManager.GetOverviewAsync(); _message = "Atualização concluída."; });
+    private async Task SaveSettingsAsync()
+    {
+        try
+        {
+            var warnings = _warningText.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries).Select(int.Parse).ToArray();
+            _settings = (_settings with { WarningSeconds = warnings }).Validate();
+            await SettingsStore.SaveAsync(_settings); _warningText = string.Join(", ", _settings.WarningSeconds); _message = "Configuração salva."; _error = null;
+        }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+    private async Task RunAsync(Func<string, Task> action)
+    {
+        _working = true; _error = null; _message = null;
+        try { var auth = await AuthenticationStateProvider.GetAuthenticationStateAsync(); await action(auth.User.Identity?.Name ?? "desconhecido"); }
+        catch (OperationCanceledException) { _message = "Operação cancelada."; }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _working = false; await InvokeAsync(StateHasChanged); }
+    }
+    private static string FormatDate(DateTimeOffset? value) => value?.ToLocalTime().ToString("dd/MM HH:mm:ss") ?? "—";
+    private static string ModeLabel(UpdateMode mode) => mode == UpdateMode.Automatico ? "Automático" : "Só avisar";
+}

@@ -1,0 +1,11 @@
+// Template: pz-painel-instalar.sh substitui __PZ_SERVER_NAME__ após validar server.env.
+polkit.addRule(function(action, subject) {
+    if (action.id != "org.freedesktop.systemd1.manage-units" || subject.user != "pzmanager") return;
+    var unit = action.lookup("unit"), verb = action.lookup("verb");
+    if (unit == "pzserver.service" && (verb == "start" || verb == "stop" || verb == "restart"))
+        return polkit.Result.YES;
+    if (verb == "start" && (unit == "pz-backup.service" || unit == "pz-atualizar.service" || unit == "pz-zerar-mundo.service" ||
+        /^pz-backup@[a-z0-9-]{1,20}\.service$/.test(unit) ||
+        /^pz-restaurar@__PZ_SERVER_NAME__-[0-9]{8}-[0-9]{6}-[a-z0-9-]{1,20}\.tar\.gz\.service$/.test(unit)))
+        return polkit.Result.YES;
+});

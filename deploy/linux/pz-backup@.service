@@ -1,0 +1,6 @@
+[Unit]
+Description=Backup do Project Zomboid (%I)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pz-backup %i

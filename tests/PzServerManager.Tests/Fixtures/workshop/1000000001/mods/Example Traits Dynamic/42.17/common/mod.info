@@ -1,0 +1,3 @@
+name=Example Traits Dynamic
+id=ExampleTraitsDynamic
+require=\ExampleTraits, \ExampleCounter

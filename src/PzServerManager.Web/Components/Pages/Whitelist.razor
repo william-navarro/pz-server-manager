@@ -1,0 +1,73 @@
+@page "/whitelist"
+@attribute [Authorize]
+@inject IWhitelistReader WhitelistReader
+@inject ServerAdministrationService Administration
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject IJSRuntime JS
+
+<PageTitle>Whitelist — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div><p class="eyebrow">ACESSO FECHADO</p><h1>Whitelist</h1><p class="page-description">Contas autorizadas a entrar no servidor. O banco do jogo é aberto somente para leitura.</p></div>
+    <button class="btn btn-outline-success" @onclick="LoadAsync">Atualizar</button>
+</div>
+@if (_error is not null) { <div class="alert alert-danger">@_error</div> }
+@if (_message is not null) { <div class="alert alert-success">@_message</div> }
+
+@if (_oneTimePassword is not null)
+{
+    <div class="alert alert-warning one-time-secret"><strong>Senha exibida uma única vez:</strong><code style="user-select: all">@_oneTimePassword</code><button class="btn btn-sm btn-outline-warning" @onclick="CopyPasswordAsync">@(_copied == true ? "Copiado ✓" : "Copiar")</button>@if (_copied == false) { <small>Não deu para copiar: selecione a senha com um clique e use Ctrl+C.</small> }<button class="btn btn-sm btn-secondary" @onclick="DismissPassword">Ocultar</button></div>
+}
+
+<div class="content-grid">
+    <section class="panel-card">
+        <div class="panel-title"><div><p class="eyebrow">CONTAS</p><h2>@_accounts.Count cadastrada(s)</h2></div></div>
+        <div class="table-responsive"><table class="data-table"><thead><tr><th>Usuário</th><th>Nome</th><th>Papel</th><th>Última conexão</th><th></th></tr></thead><tbody>
+        @foreach (var account in _accounts)
+        {
+            <tr><td>@account.UserName</td><td>@(account.DisplayName ?? "—")</td><td>@(account.RoleName ?? "—")</td><td>@(account.LastConnection?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "—")</td><td><button class="btn btn-sm btn-outline-danger" @onclick="() => AskRemove(account.UserName)">Remover</button></td></tr>
+        }
+        </tbody></table></div>
+    </section>
+    <div>
+        <section class="panel-card">
+            <div class="panel-title"><div><p class="eyebrow">NOVA CONTA</p><h2>Criar acesso</h2></div></div>
+            <div class="form-field"><label for="new-user">Usuário</label><input id="new-user" class="form-control" maxlength="32" @bind="_newUser" /></div>
+            <button class="btn btn-primary" disabled="@_busy" @onclick="CreateAsync">Gerar senha e criar</button>
+        </section>
+        <section class="panel-card command-panel">
+            <div class="panel-title"><div><p class="eyebrow">SENHA</p><h2>Trocar senha</h2></div></div>
+            <div class="form-field"><label for="password-user">Usuário</label><input id="password-user" class="form-control" maxlength="32" @bind="_passwordUser" /></div>
+            <button class="btn btn-outline-warning" disabled="@_busy" @onclick="ChangePasswordAsync">Gerar e trocar</button>
+        </section>
+    </div>
+</div>
+
+@if (_removeUser is not null)
+{
+    <section class="panel-card confirmation-box"><strong>Remover “@_removeUser” da whitelist?</strong><p>O jogador não poderá entrar até a conta ser criada novamente.</p><button class="btn btn-danger" @onclick="RemoveAsync">Confirmar</button><button class="btn btn-secondary" @onclick="() => _removeUser = null">Cancelar</button></section>
+}
+
+@code {
+    private IReadOnlyList<WhitelistAccount> _accounts = Array.Empty<WhitelistAccount>();
+    private string _newUser = string.Empty, _passwordUser = string.Empty;
+    private string? _removeUser, _oneTimePassword, _error, _message;
+    private bool? _copied;
+    private bool _busy;
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private async Task LoadAsync() { try { _accounts = await WhitelistReader.ListAsync(); _error = null; } catch (Exception e) { _error = $"Não foi possível ler a whitelist: {e.Message}"; } }
+    private async Task<string> ActorAsync() => (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "desconhecido";
+    private async Task CreateAsync() => await WithGeneratedPasswordAsync(_newUser, (actor, password) => Administration.AddUserAsync(actor, _newUser, password));
+    private async Task ChangePasswordAsync() => await WithGeneratedPasswordAsync(_passwordUser, (actor, password) => Administration.SetPasswordAsync(actor, _passwordUser, password));
+    private async Task WithGeneratedPasswordAsync(string user, Func<string, string, Task<string>> action)
+    {
+        _busy = true; _error = _message = null; _oneTimePassword = null; _copied = null;
+        try { var password = StrongPasswordGenerator.Generate(); await action(await ActorAsync(), password); _oneTimePassword = password; _message = $"Conta '{user.Trim()}' atualizada."; await LoadAsync(); }
+        catch (Exception e) { _error = e.Message; }
+        finally { _busy = false; }
+    }
+    private void AskRemove(string user) { _removeUser = user; _error = _message = null; }
+    private async Task RemoveAsync() { try { await Administration.RemoveUserAsync(await ActorAsync(), _removeUser!); _message = "Conta removida."; _removeUser = null; await LoadAsync(); } catch (Exception e) { _error = e.Message; } }
+    private async Task CopyPasswordAsync() { if (_oneTimePassword is null) return; try { _copied = await JS.InvokeAsync<bool>("pzCopy", _oneTimePassword); } catch (JSException) { _copied = false; } }
+    private void DismissPassword() { _oneTimePassword = null; _copied = null; }
+}

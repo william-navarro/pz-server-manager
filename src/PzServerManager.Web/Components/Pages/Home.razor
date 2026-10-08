@@ -1,0 +1,210 @@
+@page "/"
+@attribute [Authorize]
+@implements IAsyncDisposable
+@inject ServerInstanceService InstanceService
+@inject IManagerPaths ManagerPaths
+@inject IServiceProvider Services
+@inject Microsoft.Extensions.Options.IOptions<ManagerOptions> Options
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject ServerRestartCoordinator RestartCoordinator
+@inject IServerOperationLock ServerOperationLock
+
+<PageTitle>Visão geral — PZ Server Manager</PageTitle>
+
+@if (_managed is not null)
+{
+    <div class="page-heading">
+        <div>
+            <p class="eyebrow">SERVIDOR LINUX GERENCIADO</p>
+            <h1>@_managed.DisplayName</h1>
+            <p class="page-description">Serviço <code>@_managed.ServiceName</code> · servidor <code>@_managed.ServerName</code></p>
+        </div>
+        <span class="tag @StateClass(_displayState)">@StateLabel(_displayState)</span>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+    @if (ServerOperationLock.IsBusy)
+    {
+        <div class="alert alert-warning"><strong>Operação em andamento:</strong> @(ServerOperationLock.CurrentOperation ?? "ação do servidor"). Os controles ficam bloqueados até a conclusão.</div>
+    }
+
+    <div class="metric-grid managed-metrics">
+        <div class="metric-card"><span class="metric-label">Estado</span><strong class="status-text">@StateLabel(_displayState)</strong><span class="metric-help">@SinceLabel()</span></div>
+        <div class="metric-card"><span class="metric-label">Memória do jogo</span><strong>@FormatBytes(_status?.ProcessMemoryBytes)</strong><span class="metric-help">PID @(_status?.MainProcessId?.ToString() ?? "—")</span></div>
+        <div class="metric-card"><span class="metric-label">Memória livre</span><strong>@FormatBytes(_status?.AvailableMemoryBytes)</strong><span class="metric-help">de @FormatBytes(_status?.TotalMemoryBytes)</span></div>
+        <div class="metric-card"><span class="metric-label">Jogadores online</span><strong>@(_onlinePlayers?.Count.ToString() ?? "—")</strong><span class="metric-help">consultado via RCON</span></div>
+    </div>
+
+    <section class="panel-card server-actions">
+        <div class="panel-title">
+            <div><p class="eyebrow">CONTROLE</p><h2>Ações do serviço</h2></div>
+            <a class="btn btn-outline-success" href="console">Abrir console ao vivo</a>
+        </div>
+        <div class="action-buttons">
+            <button class="btn btn-success" disabled="@(_actionInProgress || ServerOperationLock.IsBusy || _displayState is ManagedServerState.Running or ManagedServerState.Starting)" @onclick="StartAsync">Iniciar</button>
+            <button class="btn btn-outline-warning" disabled="@(_actionInProgress || ServerOperationLock.IsBusy || _displayState is ManagedServerState.Stopped or ManagedServerState.Stopping)" @onclick="() => RequestConfirmationAsync(ManagedAction.Stop)">Parar</button>
+            <button class="btn btn-outline-danger" disabled="@(_actionInProgress || ServerOperationLock.IsBusy || _displayState is ManagedServerState.Stopped)" @onclick="() => RequestConfirmationAsync(ManagedAction.Restart)">Reiniciar</button>
+        </div>
+
+        @if (_pendingAction is not null)
+        {
+            <div class="confirmation-box">
+                <strong>Confirmar @(_pendingAction == ManagedAction.Stop ? "parada" : "reinício")?</strong>
+                @if ((_onlinePlayers?.Count ?? 0) > 0)
+                {
+                    <p>Há <strong>@_onlinePlayers!.Count jogador(es) online</strong>: @string.Join(", ", _onlinePlayers). Você pode executar agora ou usar a contagem regressiva configurada.</p>
+                }
+                else { <p>Não há jogadores online. A operação pode levar até 2 minutos.</p> }
+                @if (_pendingAction == ManagedAction.Restart)
+                {
+                    <button class="btn btn-outline-warning" @onclick="StartWarnedRestart">Reiniciar com aviso</button>
+                }
+                <button class="btn btn-danger" @onclick="ConfirmActionAsync">Executar agora</button>
+                <button class="btn btn-secondary" @onclick="CancelConfirmation">Cancelar</button>
+            </div>
+        }
+        @if (RestartCoordinator.IsScheduled)
+        {
+            <div class="alert alert-warning restart-notice"><span>Contagem regressiva em andamento: @RestartCoordinator.State.Reason. Execução prevista para @RestartCoordinator.State.ExecuteAt?.ToLocalTime().ToString("HH:mm:ss").</span><button class="btn btn-outline-warning" @onclick="CancelWarnedRestart">Cancelar reinício</button></div>
+        }
+    </section>
+}
+else
+{
+    <div class="page-heading">
+        <div><p class="eyebrow">PAINEL LOCAL</p><h1>Visão geral</h1><p class="page-description">Gerencie suas instâncias dedicadas de Project Zomboid em um único lugar.</p></div>
+        <a class="btn btn-primary" href="servidores">+ Nova instância</a>
+    </div>
+    <div class="metric-grid">
+        <div class="metric-card"><span class="metric-label">Instâncias</span><strong>@_instances.Count</strong><span class="metric-help">servidores cadastrados</span></div>
+        <div class="metric-card"><span class="metric-label">Em execução</span><strong>@_instances.Count(item => item.Status == ServerInstanceStatus.Running)</strong><span class="metric-help">processos ativos</span></div>
+        <div class="metric-card"><span class="metric-label">Aguardando instalação</span><strong>@_instances.Count(item => item.Status == ServerInstanceStatus.NotInstalled)</strong><span class="metric-help">instâncias preparadas</span></div>
+    </div>
+    <section class="panel-card">
+        <div class="panel-title"><div><p class="eyebrow">AMBIENTE</p><h2>Armazenamento operacional</h2></div><span class="tag tag-success">Pronto</span></div>
+        <dl class="path-list">
+            <div><dt>Dados</dt><dd>@ManagerPaths.DataRoot</dd></div><div><dt>SteamCMD</dt><dd>@ManagerPaths.SteamCmdRoot</dd></div>
+            <div><dt>Instâncias</dt><dd>@ManagerPaths.InstancesRoot</dd></div><div><dt>Backups</dt><dd>@ManagerPaths.BackupsRoot</dd></div>
+        </dl>
+    </section>
+}
+
+@code {
+    private readonly CancellationTokenSource _disposeSource = new();
+    private IReadOnlyList<ServerInstanceDto> _instances = Array.Empty<ServerInstanceDto>();
+    private ManagedServerOptions? _managed;
+    private IServerController? _controller;
+    private ManagedServerStatus? _status;
+    private ManagedServerState _displayState = ManagedServerState.Unknown;
+    private ManagedAction? _pendingAction;
+    private bool _actionInProgress;
+    private string? _error;
+    private Task? _refreshLoop;
+    private IReadOnlyList<string>? _onlinePlayers;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _managed = Options.Value.ManagedServer;
+        if (_managed is null) { _instances = await InstanceService.ListAsync(); return; }
+        _controller = Services.GetRequiredService<IServerController>();
+        await RefreshStatusAsync();
+        _refreshLoop = RefreshLoopAsync(_disposeSource.Token);
+    }
+
+    private async Task RefreshLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await InvokeAsync(async () => { await RefreshStatusAsync(); StateHasChanged(); });
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+    }
+
+    private async Task RefreshStatusAsync()
+    {
+        try
+        {
+            _status = await _controller!.GetStatusAsync(_disposeSource.Token);
+            if (!_actionInProgress) _displayState = _status.State;
+            if (_status.State == ManagedServerState.Running)
+            {
+                try { _onlinePlayers = await RestartCoordinator.GetPlayersAsync(_disposeSource.Token); }
+                catch { _onlinePlayers = null; }
+            }
+            else _onlinePlayers = Array.Empty<string>();
+            _error = null;
+        }
+        catch (OperationCanceledException) when (_disposeSource.IsCancellationRequested) { }
+        catch (Exception exception) { _error = $"Não foi possível consultar o serviço: {exception.Message}"; }
+    }
+
+    private async Task StartAsync() => await ExecuteActionAsync(ManagedAction.Start);
+    private async Task RequestConfirmationAsync(ManagedAction action)
+    {
+        _pendingAction = action;
+        try { _onlinePlayers = await RestartCoordinator.GetPlayersAsync(_disposeSource.Token); }
+        catch (Exception exception) { _error = $"Não foi possível consultar jogadores: {exception.Message}"; }
+    }
+    private void CancelConfirmation() => _pendingAction = null;
+    private async Task ConfirmActionAsync()
+    {
+        var action = _pendingAction; _pendingAction = null;
+        if (action is not null) await ExecuteActionAsync(action.Value);
+    }
+
+    private async Task ExecuteActionAsync(ManagedAction action)
+    {
+        _actionInProgress = true; _error = null;
+        _displayState = action == ManagedAction.Start ? ManagedServerState.Starting : ManagedServerState.Stopping;
+        try
+        {
+            var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            var userName = authenticationState.User.Identity?.Name ?? "desconhecido";
+            if (action == ManagedAction.Start) await _controller!.StartAsync(userName, _disposeSource.Token);
+            else if (action == ManagedAction.Stop) await _controller!.StopAsync(userName, _disposeSource.Token);
+            else await _controller!.RestartAsync(userName, _disposeSource.Token);
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _actionInProgress = false; await RefreshStatusAsync(); }
+    }
+
+    private void StartWarnedRestart()
+    {
+        _pendingAction = null; _actionInProgress = true; _error = null;
+        _ = RunWarnedRestartAsync();
+    }
+
+    private async Task RunWarnedRestartAsync()
+    {
+        try
+        {
+            var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+            await RestartCoordinator.WarnAndRestartAsync(authenticationState.User.Identity?.Name ?? "desconhecido", CancellationToken.None);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _actionInProgress = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private void CancelWarnedRestart() => RestartCoordinator.Cancel();
+
+    private string SinceLabel() => _status?.ActiveSince is null ? "horário indisponível" : $"desde {_status.ActiveSince.Value.ToLocalTime():dd/MM/yyyy HH:mm:ss}";
+    private static string FormatBytes(long? bytes) => bytes is null ? "—" : bytes >= 1024L * 1024 * 1024 ? $"{bytes.Value / (1024d * 1024 * 1024):0.0} GiB" : $"{bytes.Value / (1024d * 1024):0} MiB";
+    private static string StateLabel(ManagedServerState state) => state switch { ManagedServerState.Running => "Ligado", ManagedServerState.Stopped => "Desligado", ManagedServerState.Starting => "Iniciando...", ManagedServerState.Stopping => "Parando...", ManagedServerState.Failed => "Falhou", _ => "Desconhecido" };
+    private static string StateClass(ManagedServerState state) => state switch { ManagedServerState.Running => "tag-success", ManagedServerState.Starting or ManagedServerState.Stopping => "tag-warning", ManagedServerState.Failed => "tag-danger", _ => "tag-neutral" };
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposeSource.Cancel();
+        if (_refreshLoop is not null) await _refreshLoop;
+        _disposeSource.Dispose();
+    }
+    private enum ManagedAction { Start, Stop, Restart }
+}

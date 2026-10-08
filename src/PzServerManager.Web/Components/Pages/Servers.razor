@@ -1,0 +1,307 @@
+@page "/servidores"
+@attribute [Authorize]
+@using System.ComponentModel.DataAnnotations
+@inject ServerInstanceService InstanceService
+@inject ServerInstallationService InstallationService
+
+<PageTitle>Servidores — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div>
+        <p class="eyebrow">INSTÂNCIAS</p>
+        <h1>Servidores</h1>
+        <p class="page-description">Cadastre ambientes isolados antes de instalar o servidor dedicado.</p>
+    </div>
+</div>
+
+<section class="steam-status panel-card compact-card">
+    <div>
+        <span class="status-indicator @(_steamCmdStatus?.IsInstalled == true ? "online" : "offline")"></span>
+        <div>
+            <strong>SteamCMD</strong>
+            <small>@(_steamCmdStatus?.IsInstalled == true ? "Instalado e pronto" : "Será baixado automaticamente na primeira instalação")</small>
+        </div>
+    </div>
+    <code>@(_steamCmdStatus?.ExecutablePath ?? "Verificando...")</code>
+</section>
+
+@if (_installingId is not null || _installLog.Count > 0)
+{
+    <section class="operation-console panel-card">
+        <div class="panel-title">
+            <div>
+                <p class="eyebrow">STEAMCMD</p>
+                <h2>@(_installingId is not null ? "Operação em andamento" : "Última operação")</h2>
+            </div>
+            @if (_installingId is not null)
+            {
+                <span class="tag tag-warning">Aguarde</span>
+            }
+        </div>
+        <pre>@string.Join(Environment.NewLine, _installLog)</pre>
+        @if (!string.IsNullOrWhiteSpace(_operationError))
+        {
+            <div class="alert alert-danger mb-0">@_operationError</div>
+        }
+    </section>
+}
+
+<div class="servers-layout">
+    <section class="panel-card create-card">
+        <div class="panel-title">
+            <div>
+                <p class="eyebrow">NOVA INSTÂNCIA</p>
+                <h2>Configuração inicial</h2>
+            </div>
+        </div>
+
+        <EditForm Model="_model" OnValidSubmit="CreateAsync" FormName="create-server">
+            <DataAnnotationsValidator />
+
+            <div class="form-field">
+                <label for="server-name">Nome</label>
+                <InputText id="server-name" class="form-control" @bind-Value="_model.Name" placeholder="Ex.: Servidor dos Amigos" />
+                <ValidationMessage For="() => _model.Name" />
+            </div>
+
+            <div class="form-field">
+                <label for="server-branch">Branch</label>
+                <InputSelect id="server-branch" class="form-select" @bind-Value="_model.Branch">
+                    <option value="@ServerBranch.Stable">Stable (recomendada)</option>
+                    <option value="@ServerBranch.Unstable">Unstable</option>
+                    <option value="@ServerBranch.Legacy41">Legacy 41</option>
+                </InputSelect>
+            </div>
+
+            <div class="form-row">
+                <div class="form-field">
+                    <label for="game-port">Porta do jogo</label>
+                    <InputNumber id="game-port" class="form-control" @bind-Value="_model.GamePort" />
+                    <ValidationMessage For="() => _model.GamePort" />
+                </div>
+                <div class="form-field">
+                    <label for="rcon-port">Porta RCON</label>
+                    <InputNumber id="rcon-port" class="form-control" @bind-Value="_model.RconPort" />
+                    <ValidationMessage For="() => _model.RconPort" />
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_errorMessage))
+            {
+                <div class="alert alert-danger" role="alert">@_errorMessage</div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_successMessage))
+            {
+                <div class="alert alert-success" role="status">@_successMessage</div>
+            }
+
+            <button class="btn btn-primary w-100" type="submit" disabled="@_isSaving">
+                @(_isSaving ? "Criando..." : "Criar instância")
+            </button>
+        </EditForm>
+    </section>
+
+    <section class="panel-card instances-card">
+        <div class="panel-title">
+            <div>
+                <p class="eyebrow">CADASTRADAS</p>
+                <h2>@_instances.Count instância(s)</h2>
+            </div>
+        </div>
+
+        @if (_isLoading)
+        {
+            <p class="empty-state">Carregando instâncias...</p>
+        }
+        else if (_instances.Count == 0)
+        {
+            <div class="empty-state">
+                <strong>Nenhum servidor cadastrado</strong>
+                <span>Use o formulário ao lado para preparar a primeira instância.</span>
+            </div>
+        }
+        else
+        {
+            <div class="instance-list">
+                @foreach (var instance in _instances)
+                {
+                    <article class="instance-item">
+                        <div class="instance-main">
+                            <div class="server-icon">PZ</div>
+                            <div>
+                                <h3>@instance.Name</h3>
+                                <p>@BranchLabel(instance.Branch) · UDP @instance.GamePort · RCON @instance.RconPort</p>
+                            </div>
+                        </div>
+                        <div class="instance-meta">
+                            <span class="tag @StatusClass(instance.Status)">@StatusLabel(instance.Status)</span>
+                            <code title="@instance.InstallationPath">@instance.Slug</code>
+                            @if (instance.Status is ServerInstanceStatus.NotInstalled or ServerInstanceStatus.Faulted or ServerInstanceStatus.Stopped)
+                            {
+                                <button class="btn btn-sm btn-outline-success"
+                                        disabled="@(_installingId is not null)"
+                                        @onclick="() => InstallOrUpdateAsync(instance)">
+                                    @if (_installingId == instance.Id)
+                                    {
+                                        <span>Processando...</span>
+                                    }
+                                    else
+                                    {
+                                        <span>@(instance.Status == ServerInstanceStatus.Stopped ? "Atualizar" : "Instalar")</span>
+                                    }
+                                </button>
+                            }
+                        </div>
+                    </article>
+                }
+            </div>
+        }
+    </section>
+</div>
+
+@code {
+    private readonly CreateServerModel _model = new();
+    private IReadOnlyList<ServerInstanceDto> _instances = Array.Empty<ServerInstanceDto>();
+    private bool _isLoading = true;
+    private bool _isSaving;
+    private string? _errorMessage;
+    private string? _successMessage;
+    private SteamCmdStatus? _steamCmdStatus;
+    private Guid? _installingId;
+    private readonly List<string> _installLog = [];
+    private string? _operationError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _steamCmdStatus = InstallationService.GetSteamCmdStatus();
+        await ReloadAsync();
+    }
+
+    private async Task InstallOrUpdateAsync(ServerInstanceDto instance)
+    {
+        _installingId = instance.Id;
+        _operationError = null;
+        _installLog.Clear();
+
+        var progress = new Progress<string>(line =>
+        {
+            _installLog.Add(line);
+            if (_installLog.Count > 250)
+            {
+                _installLog.RemoveAt(0);
+            }
+
+            _ = InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            await InstallationService.InstallOrUpdateAsync(instance.Id, progress);
+        }
+        catch (Exception exception)
+        {
+            _operationError = $"A operação falhou: {exception.Message}";
+        }
+        finally
+        {
+            _installingId = null;
+            _steamCmdStatus = InstallationService.GetSteamCmdStatus();
+            await ReloadAsync();
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        _isSaving = true;
+        _errorMessage = null;
+        _successMessage = null;
+
+        try
+        {
+            var created = await InstanceService.CreateAsync(new CreateServerInstanceCommand(
+                _model.Name,
+                _model.Branch,
+                _model.GamePort,
+                _model.RconPort));
+
+            _successMessage = $"A instância '{created.Name}' foi criada e está pronta para receber o servidor.";
+            _model.Name = string.Empty;
+            await ReloadAsync();
+            _model.GamePort = NextAvailablePort(created.GamePort + 10);
+            _model.RconPort = NextAvailablePort(created.RconPort + 1);
+        }
+        catch (ServerInstanceValidationException exception)
+        {
+            _errorMessage = exception.Message;
+        }
+        catch (Exception)
+        {
+            _errorMessage = "Não foi possível criar a instância. Consulte os logs do gerenciador.";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        _isLoading = true;
+        _instances = await InstanceService.ListAsync();
+        _isLoading = false;
+    }
+
+    private int NextAvailablePort(int startingPort)
+    {
+        var port = startingPort;
+        while (port < 65535 && _instances.Any(item => item.GamePort == port || item.RconPort == port))
+        {
+            port++;
+        }
+
+        return Math.Min(port, 65535);
+    }
+
+    private static string BranchLabel(ServerBranch branch) => branch switch
+    {
+        ServerBranch.Stable => "Stable",
+        ServerBranch.Unstable => "Unstable",
+        ServerBranch.Legacy41 => "Legacy 41",
+        _ => branch.ToString()
+    };
+
+    private static string StatusLabel(ServerInstanceStatus status) => status switch
+    {
+        ServerInstanceStatus.NotInstalled => "Não instalado",
+        ServerInstanceStatus.Installing => "Instalando",
+        ServerInstanceStatus.Stopped => "Parado",
+        ServerInstanceStatus.Running => "Em execução",
+        ServerInstanceStatus.Updating => "Atualizando",
+        ServerInstanceStatus.Faulted => "Com erro",
+        _ => status.ToString()
+    };
+
+    private static string StatusClass(ServerInstanceStatus status) => status switch
+    {
+        ServerInstanceStatus.Running => "tag-success",
+        ServerInstanceStatus.Faulted => "tag-danger",
+        ServerInstanceStatus.Installing or ServerInstanceStatus.Updating => "tag-warning",
+        _ => "tag-neutral"
+    };
+
+    private sealed class CreateServerModel
+    {
+        [Required(ErrorMessage = "Informe o nome da instância.")]
+        [StringLength(80, MinimumLength = 2, ErrorMessage = "Use entre 2 e 80 caracteres.")]
+        public string Name { get; set; } = string.Empty;
+
+        public ServerBranch Branch { get; set; } = ServerBranch.Stable;
+
+        [Range(1, 65535, ErrorMessage = "Informe uma porta entre 1 e 65535.")]
+        public int GamePort { get; set; } = 16261;
+
+        [Range(1, 65535, ErrorMessage = "Informe uma porta entre 1 e 65535.")]
+        public int RconPort { get; set; } = 27015;
+    }
+}

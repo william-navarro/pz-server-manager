@@ -1,0 +1,171 @@
+@page "/jogadores"
+@attribute [Authorize]
+@inject ServerAdministrationService Administration
+@inject ICardinalManager Cardinal
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Jogadores — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div><p class="eyebrow">ATIVIDADE E RCON</p><h1>Jogadores</h1><p class="page-description">Atividade dos últimos sete dias, estado atual e ações administrativas seguras.</p></div>
+    <button class="btn btn-outline-success" disabled="@_busy" @onclick="LoadAsync">Atualizar</button>
+</div>
+
+@if (_error is not null) { <div class="alert alert-danger">@_error</div> }
+@if (_message is not null) { <div class="alert alert-success">@_message</div> }
+
+<div class="metric-grid">
+    <div class="metric-card"><span class="metric-label">Online agora</span><strong>@(_players?.Count.ToString() ?? "—")</strong><span class="metric-help">jogadores conectados</span></div>
+    <div class="metric-card"><span class="metric-label">Conhecidos</span><strong>@(_activities.Count)</strong><span class="metric-help">jogadores nos logs</span></div>
+    <div class="metric-card"><span class="metric-label">Mortes recentes</span><strong>@_activities.Sum(player => player.RecentDeaths.Count)</strong><span class="metric-help">nos últimos 7 dias</span></div>
+</div>
+
+<section class="panel-card">
+    <div class="panel-title"><div><p class="eyebrow">SETE DIAS</p><h2>Atividade e sobrevivência</h2></div></div>
+    @if (_activities.Count == 0)
+    {
+        <div class="empty-state small-empty"><strong>Aguardando os logs</strong><span>A coleta funciona mesmo com a Cardinal desligada.</span></div>
+    }
+    else
+    {
+        <div class="table-responsive"><table class="data-table"><thead><tr><th>Jogador</th><th>Estado</th><th>Sobrevivência</th><th>Recorde</th><th>Mortes</th><th>Kills</th><th>Vida / zumbis</th><th>Última posição</th><th>Semana</th></tr></thead><tbody>
+        @foreach (var player in _activities)
+        {
+            <tr>
+                <td><strong>@player.Username</strong><br /><small>@FormatSeen(player.LastSeen)</small></td>
+                <td><span class="tag @(player.Online ? "tag-success" : "tag-neutral")">@(player.Online ? "online" : "offline")</span></td>
+                <td>@FormatHours(player.CurrentHoursSurvived)</td><td>@FormatHours(player.SurvivalRecordHours)</td>
+                <td>@player.Deaths</td><td>@player.Kills</td>
+                <td>@(player.HealthPercent?.ToString("0") ?? "—")% / @player.ZombiesNearby</td>
+                <td>@FormatPosition(player)</td><td>@FormatPlayed(player.PlayedThisWeek)</td>
+            </tr>
+            @if (player.RecentDeaths.Count > 0)
+            {
+                <tr class="activity-detail"><td colspan="9"><strong>Mortes:</strong> @string.Join(" · ", player.RecentDeaths.Take(5).Select(FormatDeath))</td></tr>
+            }
+        }
+        </tbody></table></div>
+    }
+</section>
+
+<section class="panel-card">
+    <div class="panel-title"><div><p class="eyebrow">CONECTADOS</p><h2>Lista atual</h2></div></div>
+    @if (_players is null) { <p class="page-description">Consultando o servidor...</p> }
+    else if (_players.Count == 0) { <div class="empty-state"><strong>Ninguém conectado</strong><span>O servidor está vazio neste momento.</span></div> }
+    else
+    {
+        <div class="player-list">
+            @foreach (var player in _players)
+            {
+                <div class="player-card">
+                    <strong>@player</strong>
+                    <div class="action-buttons">
+                        <button class="btn btn-sm btn-outline-warning" @onclick="() => Begin(PlayerAction.Kick, player)">Expulsar</button>
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => Begin(PlayerAction.Ban, player)">Banir</button>
+                        <button class="btn btn-sm btn-outline-success" @onclick="() => Begin(PlayerAction.Access, player)">Acesso</button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</section>
+
+<section class="panel-card command-panel">
+    <div class="form-row">
+        <div class="form-field"><label for="unban-name">Usuário para desbanir</label><input id="unban-name" class="form-control" maxlength="32" @bind="_unbanName" /></div>
+        <div class="action-bottom"><button class="btn btn-outline-warning" @onclick="() => Begin(PlayerAction.Unban, _unbanName)">Desbanir</button></div>
+    </div>
+    <div class="form-field"><label for="server-message">Mensagem a todos</label><input id="server-message" class="form-control" maxlength="200" @bind="_serverMessage" /></div>
+    <div class="action-buttons"><button class="btn btn-primary" @onclick="() => Begin(PlayerAction.Message, null)">Enviar mensagem</button><button class="btn btn-outline-success" @onclick="() => Begin(PlayerAction.Save, null)">Salvar mundo</button></div>
+</section>
+
+@if (_pending is not null)
+{
+    <section class="panel-card confirmation-box">
+        <strong>Confirmar @ActionLabel(_pending.Value)?</strong>
+        @if (_pending is PlayerAction.Kick or PlayerAction.Ban)
+        {
+            <div class="form-field"><label for="reason">Motivo</label><input id="reason" class="form-control" maxlength="200" @bind="_reason" /></div>
+        }
+        @if (_pending == PlayerAction.Ban)
+        {
+            <label class="check-label"><input type="checkbox" @bind="_banIp" /> Também banir o IP</label>
+        }
+        @if (_pending == PlayerAction.Access)
+        {
+            <div class="form-field"><label for="access">Nível</label><select id="access" class="form-select" @bind="_accessLevel">@foreach (var level in Enum.GetValues<ServerAccessLevel>()) { <option value="@level">@AccessLabel(level)</option> }</select></div>
+        }
+        <div class="action-buttons"><button class="btn btn-danger" disabled="@_busy" @onclick="ConfirmAsync">Confirmar</button><button class="btn btn-secondary" @onclick="Cancel">Cancelar</button></div>
+    </section>
+}
+
+@code {
+    private IReadOnlyList<string>? _players;
+    private IReadOnlyList<PlayerActivitySummary> _activities = [];
+    private PlayerAction? _pending;
+    private string? _target;
+    private string _reason = string.Empty;
+    private string _unbanName = string.Empty;
+    private string _serverMessage = string.Empty;
+    private ServerAccessLevel _accessLevel = ServerAccessLevel.User;
+    private bool _banIp;
+    private bool _busy;
+    private string? _error;
+    private string? _message;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        _busy = true; _error = null;
+        try
+        {
+            var dashboard = await Cardinal.GetDashboardAsync();
+            _activities = dashboard.Players;
+            try { _players = await Administration.GetPlayersAsync(); }
+            catch (Exception exception) { _players = _activities.Where(player => player.Online).Select(player => player.Username).ToArray(); _error = $"RCON indisponível; exibindo o último estado coletado: {exception.Message}"; }
+        }
+        catch (Exception exception) { _error = $"Não foi possível consultar a atividade: {exception.Message}"; }
+        finally { _busy = false; }
+    }
+    private void Begin(PlayerAction action, string? target) { _pending = action; _target = target; _error = _message = null; }
+    private void Cancel() { _pending = null; _target = null; }
+    private async Task ConfirmAsync()
+    {
+        if (_pending is null) return;
+        _busy = true; _error = _message = null;
+        try
+        {
+            var actor = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "desconhecido";
+            switch (_pending.Value)
+            {
+                case PlayerAction.Kick: await Administration.KickAsync(actor, _target!, _reason); break;
+                case PlayerAction.Ban: await Administration.BanAsync(actor, _target!, _reason, _banIp); break;
+                case PlayerAction.Unban: await Administration.UnbanAsync(actor, _target!); break;
+                case PlayerAction.Access: await Administration.SetAccessLevelAsync(actor, _target!, _accessLevel); break;
+                case PlayerAction.Message: await Administration.SendMessageAsync(actor, _serverMessage); break;
+                case PlayerAction.Save: await Administration.SaveAsync(actor); break;
+            }
+            _message = "Ação concluída pelo servidor."; _pending = null; _reason = string.Empty; _banIp = false;
+            await LoadAsync();
+        }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+    private static string ActionLabel(PlayerAction action) => action switch { PlayerAction.Kick => "a expulsão", PlayerAction.Ban => "o banimento", PlayerAction.Unban => "o desbanimento", PlayerAction.Access => "a alteração de acesso", PlayerAction.Message => "o envio da mensagem", _ => "o salvamento" };
+    private static string AccessLabel(ServerAccessLevel level) => level switch
+    {
+        ServerAccessLevel.User => "Usuário (tirar acesso administrativo)",
+        ServerAccessLevel.Priority => "Prioridade",
+        ServerAccessLevel.Admin => "Administrador",
+        ServerAccessLevel.Moderator => "Moderador",
+        ServerAccessLevel.GM => "GM",
+        ServerAccessLevel.Observer => "Observador",
+        _ => level.ToString()
+    };
+    private static string FormatSeen(DateTimeOffset? value) => value?.ToLocalTime().ToString("dd/MM HH:mm") ?? "nunca visto";
+    private static string FormatHours(double value) => value < 1 ? $"{value * 60:0} min" : $"{value:0.#} h";
+    private static string FormatPlayed(TimeSpan value) => value.TotalHours >= 1 ? $"{value.TotalHours:0.#} h" : $"{value.TotalMinutes:0} min";
+    private static string FormatPosition(PlayerActivitySummary player) => player.X is null ? "—" : $"{player.X}, {player.Y}, {player.Z}";
+    private static string FormatDeath(PlayerDeath death) => $"{death.Timestamp.ToLocalTime():dd/MM HH:mm}, {FormatHours(death.HoursSurvived)} em {death.X?.ToString() ?? "?"},{death.Y?.ToString() ?? "?"},{death.Z?.ToString() ?? "?"}";
+    private enum PlayerAction { Kick, Ban, Unban, Access, Message, Save }
+}

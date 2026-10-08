@@ -1,0 +1,1 @@
+The Workshop, SandboxVars, translation, Cardinal, and identifying values in these fixtures are synthetic and were written for this test suite. The retained INI/RCON protocol samples contain no operator data and no Steam Workshop file content.

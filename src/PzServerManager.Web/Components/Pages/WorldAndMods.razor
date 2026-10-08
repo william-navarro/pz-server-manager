@@ -1,0 +1,286 @@
+@page "/mundo-e-mods"
+@attribute [Authorize]
+@implements IAsyncDisposable
+@inject SandboxSettingsService SandboxService
+@inject ServerRestartCoordinator RestartCoordinator
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject Microsoft.Extensions.Options.IOptions<ManagerOptions> Options
+@inject IJSRuntime JS
+
+<PageTitle>Mundo e mods — PZ Server Manager</PageTitle>
+
+<div class="page-heading">
+    <div><p class="eyebrow">SANDBOXVARS</p><h1>Mundo e mods</h1><p class="page-description">Edite as regras do mundo e as opções dos mods ativos com formulários gerados dos arquivos do jogo.</p></div>
+    <button class="btn btn-outline-success" disabled="@_loading" @onclick="ReloadAsync">Recarregar arquivo</button>
+</div>
+
+@if (_error is not null) { <div class="alert alert-danger">@_error</div> }
+@if (_message is not null) { <div class="alert alert-success">@_message</div> }
+@if (_snapshot is not null)
+{
+    @foreach (var warning in _snapshot.Warnings) { <div class="alert alert-warning">@warning</div> }
+
+    <section class="panel-card sandbox-toolbar">
+        <div class="form-field filter-field"><label for="sandbox-search">Busca global por nome, chave, descrição ou seção</label><input id="sandbox-search" class="form-control" @bind="_search" @bind:event="oninput" /></div>
+        <span class="tag tag-neutral">@FilteredOptions.Count() opções</span>
+    </section>
+
+    @if (string.IsNullOrWhiteSpace(_search))
+    {
+        <div class="sandbox-tabs" role="tablist" aria-label="Origem das opções">
+            @foreach (var source in Sources)
+            {
+                <button class="sandbox-tab @(source.Key == _selectedSource ? "active" : null)" role="tab" aria-selected="@(source.Key == _selectedSource)" @onclick="() => SelectSource(source.Key)">@source.Label <span>@source.Count</span></button>
+            }
+        </div>
+    }
+
+    @foreach (var sourceGroup in DisplayedOptions.GroupBy(option => new { option.SourceKey, option.SourceLabel }))
+    {
+        @if (!string.IsNullOrWhiteSpace(_search))
+        {
+            <div class="sandbox-search-source"><p class="eyebrow">ORIGEM</p><h2>@sourceGroup.Key.SourceLabel</h2></div>
+        }
+        @foreach (var optionSection in sourceGroup.GroupBy(option => option.Section))
+        {
+            <section class="panel-card settings-group">
+                <div class="panel-title"><div><p class="eyebrow">SEÇÃO</p><h2>@optionSection.Key</h2></div><span class="tag tag-neutral">@optionSection.Count()</span></div>
+                <div class="settings-list">
+                @foreach (var setting in optionSection)
+                {
+                    <div class="setting-row sandbox-setting" @key="setting.Path">
+                        <div class="setting-info">
+                            <div class="setting-label-line"><label for="sandbox-@SafeId(setting.Path)">@setting.Label</label>@if (IsChanged(setting)) { <span class="tag tag-warning">alterado do padrão</span> }</div>
+                            <code>@setting.Path</code>
+                            @if (!string.IsNullOrWhiteSpace(setting.Description)) { <p>@setting.Description</p> }
+                            <small>Padrão: @(setting.DisplayDefaultValue ?? "não informado")@if (setting.Minimum is not null || setting.Maximum is not null) { <text> · Min: @(FormatNumber(setting.Minimum) ?? "—") · Max: @(FormatNumber(setting.Maximum) ?? "—")</text> }</small>
+                            @if (setting.IsNewWorldOnly) { <small class="new-world-warning">Só vale para um mundo novo.</small> }
+                        </div>
+                        <div class="setting-control sandbox-control">
+                            @if (setting.ValueType == SandboxValueType.Boolean)
+                            {
+                                <label class="switch-control" for="sandbox-@SafeId(setting.Path)"><input id="sandbox-@SafeId(setting.Path)" data-sandbox-path="@setting.Path" type="checkbox" checked="@IsEnabled(setting)" @onchange="e => SetBoolean(setting.Path, e.Value)" /><span>@(IsEnabled(setting) ? "Ligado" : "Desligado")</span></label>
+                            }
+                            else if (setting.EnumOptions.Count > 0)
+                            {
+                                <select id="sandbox-@SafeId(setting.Path)" data-sandbox-path="@setting.Path" class="form-select" value="@_values[setting.Path]" @onchange="e => SetValue(setting.Path, e.Value)">@foreach (var option in setting.EnumOptions) { <option value="@option.Value">@option.Label</option> }</select>
+                            }
+                            else if (setting.ValueType is SandboxValueType.Integer or SandboxValueType.Double)
+                            {
+                                <input id="sandbox-@SafeId(setting.Path)" data-sandbox-path="@setting.Path" class="form-control" type="number" min="@FormatNumber(setting.Minimum)" max="@FormatNumber(setting.Maximum)" step="@(setting.ValueType == SandboxValueType.Double ? "any" : "1")" value="@_values[setting.Path]" @oninput="e => SetValue(setting.Path, e.Value)" />
+                            }
+                            else
+                            {
+                                <input id="sandbox-@SafeId(setting.Path)" data-sandbox-path="@setting.Path" class="form-control" type="text" value="@_values[setting.Path]" @oninput="e => SetValue(setting.Path, e.Value)" />
+                            }
+                            <button class="btn btn-sm btn-outline-warning" disabled="@(setting.DefaultValue is null || !IsChanged(setting))" @onclick="() => Reset(setting)">Voltar ao padrão</button>
+                        </div>
+                    </div>
+                }
+                </div>
+            </section>
+        }
+    }
+
+    @if (!DisplayedOptions.Any()) { <div class="empty-state"><strong>Nenhuma opção encontrada</strong><span>Ajuste a busca ou confira os mods ativos.</span></div> }
+
+    <div class="sticky-actions"><button class="btn btn-primary" disabled="@(_loading || _preview.Count > 0)" @onclick="Review">Revisar mudanças</button></div>
+}
+
+@if (_preview.Count > 0)
+{
+    <section class="panel-card confirmation-box">
+        <strong>Confira antes de gravar</strong>
+        <ul class="change-list">@foreach (var change in _preview) { <li><code>@change.Path</code>: <span>@change.Before</span> → <span>@change.After</span></li> }</ul>
+        <div class="action-buttons"><button class="btn btn-danger" disabled="@_loading" @onclick="SaveAsync">Gravar com backup</button><button class="btn btn-secondary" @onclick="() => _preview.Clear()">Voltar</button></div>
+    </section>
+}
+
+@if (_saved)
+{
+    <div class="alert alert-warning restart-notice"><span>As mudanças valem no próximo reinício.</span><button class="btn btn-outline-warning" @onclick="RestartAsync">Reiniciar agora</button></div>
+}
+@if (_restartPlayers is not null)
+{
+    <section class="panel-card confirmation-box"><strong>Há @_restartPlayers.Count jogador(es) online.</strong><p>@string.Join(", ", _restartPlayers). Avise a todos e reinicie em 5 minutos, ou cancele.</p><button class="btn btn-outline-warning" @onclick="StartWarnedRestart">Avisar e reiniciar em 5 min</button><button class="btn btn-secondary" @onclick="() => _restartPlayers = null">Cancelar</button></section>
+}
+@if (_restartTask is not null)
+{
+    <div class="alert alert-warning restart-notice"><span>Reinício avisado em andamento.</span><button class="btn btn-outline-warning" @onclick="CancelRestart">Cancelar reinício</button></div>
+}
+
+@code {
+    private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
+    private readonly List<SandboxSettingChange> _preview = [];
+    private readonly CancellationTokenSource _disposeSource = new();
+    private SandboxSettingsSnapshot? _snapshot;
+    private string _selectedSource = "__base";
+    private string _search = string.Empty;
+    private string? _error, _message;
+    private bool _loading, _saved;
+    private bool _draftInitializationPending;
+    private IReadOnlyList<string>? _restartPlayers;
+    private Task? _restartTask;
+    private ManagedServerOptions Server => Options.Value.ManagedServer!;
+
+    // Busca sem acento/maiúscula e por palavras, incluindo seção e origem ("xp força", "distensao").
+    private IEnumerable<SandboxOptionSetting> FilteredOptions
+    {
+        get
+        {
+            if (_snapshot is null) return [];
+            var terms = Fold(_search).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (terms.Length == 0) return _snapshot.Options;
+            return _snapshot.Options.Where(option =>
+            {
+                var text = Fold($"{option.Path} {option.Label} {option.Description} {option.Section} {option.SourceLabel}");
+                return terms.All(text.Contains);
+            });
+        }
+    }
+    private static string Fold(string? value) => new string((value ?? string.Empty).Normalize(System.Text.NormalizationForm.FormD)
+        .Where(c => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.NonSpacingMark)
+        .ToArray()).ToLowerInvariant();
+    private IEnumerable<SandboxOptionSetting> DisplayedOptions => string.IsNullOrWhiteSpace(_search)
+        ? FilteredOptions.Where(option => option.SourceKey == _selectedSource)
+        : FilteredOptions;
+    private IEnumerable<(string Key, string Label, int Count)> Sources => _snapshot?.Options
+        .GroupBy(option => new { option.SourceKey, option.SourceLabel })
+        .Select(group => (group.Key.SourceKey, group.Key.SourceLabel, group.Count())) ?? [];
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+    private async Task<string> ActorAsync() => (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User.Identity?.Name ?? "desconhecido";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_draftInitializationPending || _snapshot is null) return;
+        _draftInitializationPending = false;
+        try
+        {
+            var signature = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(_snapshot.OriginalText)));
+            var baseline = _snapshot.Options.ToDictionary(option => option.Path, option => option.Value, StringComparer.Ordinal);
+            var draft = await JS.InvokeAsync<Dictionary<string, string>>(
+                "pzSandboxDraft.initialize", "pzmanager:mundo-e-mods", signature, baseline);
+            var restored = 0;
+            foreach (var (path, value) in draft)
+            {
+                if (!_values.ContainsKey(path) || string.Equals(_values[path], value, StringComparison.Ordinal)) continue;
+                _values[path] = value;
+                restored++;
+            }
+            if (restored > 0)
+            {
+                _message = $"{restored} alteração(ões) pendente(s) foram recuperadas neste navegador.";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (JSException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true; _error = _message = null; _saved = false; _preview.Clear();
+        try
+        {
+            _snapshot = await SandboxService.LoadAsync(Server.SandboxVarsPath, Server.ServerIniPath, Server.InstallPath, Server.ServerVersion);
+            _values.Clear(); foreach (var option in _snapshot.Options) _values[option.Path] = option.Value;
+            if (!_snapshot.Options.Any(option => option.SourceKey == _selectedSource)) _selectedSource = _snapshot.Options.FirstOrDefault()?.SourceKey ?? "__base";
+            _draftInitializationPending = true;
+        }
+        catch (Exception exception) { _error = $"Não foi possível ler as opções do mundo: {exception.Message}"; }
+        finally { _loading = false; }
+    }
+
+    private async Task ReloadAsync()
+    {
+        try { await JS.InvokeVoidAsync("pzSandboxDraft.clear", "pzmanager:mundo-e-mods"); }
+        catch (JSException) { }
+        await LoadAsync();
+    }
+
+    private void SelectSource(string key) { _selectedSource = key; _preview.Clear(); }
+    private void SetValue(string path, object? value) { _values[path] = value?.ToString() ?? string.Empty; Changed(); }
+    private void SetBoolean(string path, object? value) { _values[path] = Convert.ToBoolean(value) ? "true" : "false"; Changed(); }
+    private async Task Reset(SandboxOptionSetting option)
+    {
+        if (option.DefaultValue is null) return;
+        _values[option.Path] = option.DefaultValue;
+        Changed();
+        try { await JS.InvokeVoidAsync("pzSandboxDraft.set", option.Path, option.DefaultValue); }
+        catch (JSException) { }
+    }
+    private void Changed() { _preview.Clear(); _saved = false; _message = null; }
+    private bool IsEnabled(SandboxOptionSetting option) => bool.TryParse(_values[option.Path], out var enabled) && enabled;
+    private bool IsChanged(SandboxOptionSetting option)
+    {
+        if (option.DefaultValue is null) return false;
+        if (option.ValueType is SandboxValueType.Integer or SandboxValueType.Double &&
+            decimal.TryParse(_values[option.Path], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var current) &&
+            decimal.TryParse(option.DefaultValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var standard)) return current != standard;
+        return !string.Equals(_values[option.Path], option.DefaultValue, StringComparison.Ordinal);
+    }
+
+    private void Review()
+    {
+        _error = _message = null; _preview.Clear();
+        try
+        {
+            foreach (var option in _snapshot!.Options.Where(option => !string.Equals(option.Value, _values[option.Path], StringComparison.Ordinal)))
+            {
+                SandboxSettingsService.ValidateValue(option, _values[option.Path]);
+                _preview.Add(new(option.Path, option.Value, _values[option.Path]));
+            }
+            if (_preview.Count == 0) _message = "Nenhuma opção foi alterada.";
+        }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+
+    private async Task SaveAsync()
+    {
+        _loading = true; _error = null;
+        try
+        {
+            await SandboxService.SaveAsync(Server.SandboxVarsPath, _snapshot!, _values, await ActorAsync());
+            _message = "Opções do mundo gravadas com backup automático."; _saved = true;
+            try { await JS.InvokeVoidAsync("pzSandboxDraft.clear", "pzmanager:mundo-e-mods"); }
+            catch (JSException) { }
+            await RefreshSnapshotAsync();
+        }
+        catch (ServerSettingsConflictException exception) { _error = exception.Message; _preview.Clear(); }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _loading = false; }
+    }
+
+    private async Task RefreshSnapshotAsync()
+    {
+        _snapshot = await SandboxService.LoadAsync(Server.SandboxVarsPath, Server.ServerIniPath, Server.InstallPath, Server.ServerVersion);
+        _values.Clear(); foreach (var option in _snapshot.Options) _values[option.Path] = option.Value;
+        _preview.Clear();
+        _draftInitializationPending = true;
+    }
+
+    private async Task RestartAsync()
+    {
+        try
+        {
+            var actor = await ActorAsync(); var players = await RestartCoordinator.GetPlayersAsync();
+            if (players.Count > 0) { _restartPlayers = players; return; }
+            await RestartCoordinator.RestartNowAsync(actor); _message = "Reinício solicitado.";
+        }
+        catch (Exception exception) { _error = exception.Message; }
+    }
+    private void StartWarnedRestart() { _restartPlayers = null; _message = "Reinício programado e primeiro aviso enviado."; _restartTask = RunWarnedRestartAsync(); }
+    private async Task RunWarnedRestartAsync()
+    {
+        try { await RestartCoordinator.WarnAndRestartAsync(await ActorAsync(), _disposeSource.Token); _message = "Reinício solicitado."; }
+        catch (OperationCanceledException) { _message = "Reinício programado cancelado."; }
+        catch (Exception exception) { _error = exception.Message; }
+        finally { _restartTask = null; await InvokeAsync(StateHasChanged); }
+    }
+    private void CancelRestart() => RestartCoordinator.Cancel();
+    private static string SafeId(string path) => path.Replace('.', '-');
+    private static string? FormatNumber(decimal? value) => value?.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    public async ValueTask DisposeAsync() { _disposeSource.Cancel(); RestartCoordinator.Cancel(); if (_restartTask is not null) await _restartTask; _disposeSource.Dispose(); }
+}
